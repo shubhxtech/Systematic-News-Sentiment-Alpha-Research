@@ -156,7 +156,7 @@ export function useScreenerData() {
                   if (data.daily.length || data.intraday.length) {
                     setCandleCache(ticker, data);
                   }
-                  await new Promise(r => setTimeout(r, 600)); // Respect 10/sec rate limit safely
+                  await new Promise(r => setTimeout(r, 1500)); // Extremely safe rate limit
                 }
               }
             } finally {
