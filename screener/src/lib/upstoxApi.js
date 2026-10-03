@@ -33,10 +33,10 @@ function chunkArray(array, size) {
 // ── API calls ──────────────────────────────────────────────────────────────
 export async function getMarketQuotes(tickers = TICKERS) {
   const keys = tickers.map(t => UNIVERSE[t]?.key).filter(Boolean);
-  const chunks = chunkArray(keys, 250); // Upstox allows max 500, but keeping it safe at 250
+  const chunks = chunkArray(keys, 500); // Use max allowed 500 to minimize requests
   
   const allQuotes = {};
-  await Promise.all(chunks.map(async (chunk) => {
+  for (const chunk of chunks) {
     try {
       const { data } = await upstox.get('/v3/market-quote/quotes', { 
         params: { instrument_key: chunk.join(',') } 
@@ -45,9 +45,11 @@ export async function getMarketQuotes(tickers = TICKERS) {
         Object.assign(allQuotes, data.data);
       }
     } catch (e) {
-      console.error("Quotes chunk failed", e);
+      console.error("Quotes chunk failed", e?.response?.status || e.message);
     }
-  }));
+    // Respect rate limits strongly
+    await new Promise(r => setTimeout(r, 300));
+  }
   return allQuotes;
 }
 
@@ -59,10 +61,9 @@ export async function getHistoricalCandles(ticker) {
   const dayFrom = new Date(Date.now() - 100 * 86400000).toISOString().split('T')[0];
   const minFrom = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0];
 
-  const [dayRes, minRes] = await Promise.all([
-    upstox.get(`/v2/historical-candle/${encodeURIComponent(key)}/day/${today}/${dayFrom}`).catch(()=>({data:{}})),
-    upstox.get(`/v2/historical-candle/${encodeURIComponent(key)}/1minute/${today}/${minFrom}`).catch(()=>({data:{}}))
-  ]);
+  const dayRes = await upstox.get(`/v2/historical-candle/${encodeURIComponent(key)}/day/${today}/${dayFrom}`).catch(()=>({data:{}}));
+  await new Promise(r => setTimeout(r, 100)); // Stagger to prevent parallel 429 limits
+  const minRes = await upstox.get(`/v2/historical-candle/${encodeURIComponent(key)}/1minute/${today}/${minFrom}`).catch(()=>({data:{}}));
 
   const daily = (dayRes.data?.data?.candles || []).map(([ts, o, h, l, c, vol]) => ({
     date: new Date(ts).toISOString(), open: o, high: h, low: l, close: c, volume: vol
