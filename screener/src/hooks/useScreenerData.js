@@ -143,17 +143,26 @@ export function useScreenerData() {
         }); // INSTANT UPDATE
         
         // 2. Background Historical Fetch (Progressive)
-        for (const k of keys) {
-          const q = quotes[k];
-          const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t].key === k) || k.split(':')[1];
-          if (!ticker || !UNIVERSE[ticker]) continue;
-          if (!candleCache[ticker]) {
-            const data = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
-            if (data.daily.length || data.intraday.length) {
-              setCandleCache(ticker, data);
+        if (!window.__isFetchingHistory) {
+          window.__isFetchingHistory = true;
+          (async () => {
+            try {
+              for (const k of keys) {
+                const q = quotes[k];
+                const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t].key === k) || k.split(':')[1];
+                if (!ticker || !UNIVERSE[ticker]) continue;
+                if (!candleCache[ticker]) {
+                  const data = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+                  if (data.daily.length || data.intraday.length) {
+                    setCandleCache(ticker, data);
+                  }
+                  await new Promise(r => setTimeout(r, 600)); // Respect 10/sec rate limit safely
+                }
+              }
+            } finally {
+              window.__isFetchingHistory = false;
             }
-            await new Promise(r => setTimeout(r, 600)); // Respect 10/sec rate limit safely
-          }
+          })();
         }
       }
       setLastUpdated(new Date().toLocaleTimeString('en-IN'));
@@ -167,10 +176,22 @@ export function useScreenerData() {
 
   useEffect(() => {
     fetchNLP();
-    poll();
     const nlpInterval = setInterval(fetchNLP, 60000);
-    const pollInterval = setInterval(poll, 5000);
-    return () => { clearInterval(nlpInterval); clearInterval(pollInterval); };
+    let timerId;
+    let isUnmounted = false;
+
+    const runPoll = async () => {
+      if (isUnmounted) return;
+      await poll();
+      if (!isUnmounted) timerId = setTimeout(runPoll, 5000);
+    };
+    runPoll();
+
+    return () => { 
+      isUnmounted = true;
+      clearInterval(nlpInterval); 
+      clearTimeout(timerId); 
+    };
   }, [poll, fetchNLP]);
 
   return { pollOnce: poll };

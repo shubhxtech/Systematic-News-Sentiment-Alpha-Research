@@ -48,7 +48,7 @@ export async function getMarketQuotes(tickers = TICKERS) {
       console.error("Quotes chunk failed", e?.response?.status || e.message);
     }
     // Respect rate limits strongly
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 800));
   }
   return allQuotes;
 }
