@@ -3,15 +3,29 @@ export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
   theme: {
     extend: {
-      animation: {
-        'flash-green': 'flashGreen 0.6s ease-out',
-        'flash-red':   'flashRed 0.6s ease-out',
-        'spin-slow':   'spin 2s linear infinite',
-        'pulse-fast':  'pulse 1s ease-in-out infinite',
+      colors: {
+        // Expose design tokens as Tailwind colours so JSX can use them
+        bg:            'var(--bg)',
+        'bg-subtle':   'var(--bg-subtle)',
+        'bg-hover':    'var(--bg-hover)',
+        border:        'var(--border)',
+        'border-strong': 'var(--border-strong)',
+        text:          'var(--text)',
+        'text-muted':  'var(--text-muted)',
+        'text-faint':  'var(--text-faint)',
+        up:            'var(--up)',
+        'up-bg':       'var(--up-bg)',
+        down:          'var(--down)',
+        'down-bg':     'var(--down-bg)',
+        accent:        'var(--accent)',
+        'accent-bg':   'var(--accent-bg)',
       },
-      keyframes: {
-        flashGreen: { '0%': { backgroundColor: 'rgba(16,185,129,0.35)' }, '100%': { backgroundColor: 'transparent' } },
-        flashRed:   { '0%': { backgroundColor: 'rgba(239,68,68,0.35)' },  '100%': { backgroundColor: 'transparent' } },
+      fontFamily: {
+        sans: ['var(--font-sans)'],
+      },
+      borderRadius: {
+        DEFAULT: 'var(--radius)',
+        chip:    'var(--radius-chip)',
       },
     },
   },

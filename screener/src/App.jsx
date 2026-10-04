@@ -1,110 +1,171 @@
 import { useStore } from './lib/store';
 import { useScreenerData } from './hooks/useScreenerData';
-import { LineChart, LayoutGrid, BellRing, Star, RefreshCw, AlertCircle, Settings, KeyRound } from 'lucide-react';
-import ScreenerTable from './components/ScreenerTable';
+import {
+  LineChart, LayoutGrid, Star, BellRing, Settings,
+  RefreshCw, KeyRound, AlertCircle,
+} from 'lucide-react';
+import ScreenerTable    from './components/ScreenerTable';
 import StockDetailPanel from './components/StockDetailPanel';
-import SettingsPanel from './components/SettingsPanel';
-import SectorHeatmap from './components/SectorHeatmap';
-import AlertsPanel from './components/AlertsPanel';
-import WatchlistPanel from './components/WatchlistPanel';
-import MarketBreadth from './components/MarketBreadth';
-import ChartModal from './components/ChartModal';
+import SettingsPanel    from './components/SettingsPanel';
+import SectorHeatmap    from './components/SectorHeatmap';
+import AlertsPanel      from './components/AlertsPanel';
+import WatchlistPanel   from './components/WatchlistPanel';
+import MarketBreadth    from './components/MarketBreadth';
+import ChartModal       from './components/ChartModal';
 
 export default function App() {
   const {
-    activeTab, setActiveTab, selectedTicker,
-    apiToken, loading, error, chartModalTicker,
-    lastUpdated, marketOpen, watchlist, needsApiToken,
+    activeTab, setActiveTab,
+    selectedTicker,
+    apiToken,
+    loading, error,
+    chartModalTicker,
+    lastUpdated,
+    marketOpen,
+    watchlist,
+    needsApiToken,
   } = useStore();
+
   const { pollOnce } = useScreenerData();
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* ── No-Token Banner ────────────────────────────────────────────────── */}
+    <div className="min-h-screen flex flex-col" style={{ background: 'var(--bg)' }}>
+
+      {/* ── No-token warning banner ──────────────────────────────────────── */}
       {needsApiToken && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-6 py-2.5 flex items-center gap-3">
-          <KeyRound size={15} className="text-amber-400 shrink-0" />
-          <p className="text-xs text-amber-300 flex-1">
+        <div
+          className="flex items-center gap-3 px-6 py-2.5 text-sm border-b"
+          style={{
+            background:   'var(--warn-bg)',
+            borderColor:  'var(--warn-border)',
+            color:        'var(--warn)',
+          }}
+        >
+          <KeyRound size={14} className="shrink-0" />
+          <span className="flex-1 text-xs">
             <strong>No Upstox API token configured.</strong>{' '}
-            Real-time market data and charts require a valid token. No demo or random data will be shown.
-          </p>
+            Real-time data requires a valid token. No demo or random data is shown.
+          </span>
           <button
             onClick={() => setActiveTab('settings')}
-            className="text-xs font-semibold text-amber-400 hover:text-amber-200 underline shrink-0"
+            className="text-xs font-semibold underline shrink-0 hover:opacity-75"
+            style={{ color: 'var(--warn)' }}
           >
-            Configure in Settings →
+            Configure →
           </button>
         </div>
       )}
 
-      {/* ── Navbar ─────────────────────────────────────────────────────────── */}
-      <nav className="h-14 border-b border-white/[0.05] bg-[#080d18] flex items-center justify-between px-6 shrink-0">
+      {/* ── Top nav ────────────────────────────────────────────────────────── */}
+      <header
+        className="h-14 flex items-center justify-between px-6 shrink-0 border-b"
+        style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+      >
+        {/* Logo + nav links */}
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center">
-              <LineChart size={14} className="text-white" />
+            <div
+              className="w-7 h-7 rounded flex items-center justify-center"
+              style={{ background: 'var(--accent)' }}
+            >
+              <LineChart size={14} color="#fff" />
             </div>
-            <span className="font-semibold text-slate-100 tracking-tight">
+            <span className="font-semibold text-sm" style={{ color: 'var(--text)' }}>
               India Screener
             </span>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-white/[0.03]">
-            <NavBtn active={activeTab === 'screener'} onClick={() => setActiveTab('screener')} icon={LayoutGrid} label="Screener" />
-            <NavBtn
+          <nav className="flex items-center gap-1">
+            <NavLink active={activeTab === 'screener'} onClick={() => setActiveTab('screener')} icon={LayoutGrid} label="Screener" />
+            <NavLink
               active={activeTab === 'watchlist'}
               onClick={() => setActiveTab('watchlist')}
               icon={Star}
               label={`Watchlist${watchlist.length ? ` (${watchlist.length})` : ''}`}
             />
-            <NavBtn active={activeTab === 'heatmap'} onClick={() => setActiveTab('heatmap')} icon={LayoutGrid} label="Heatmap" />
-            <NavBtn active={activeTab === 'alerts'}  onClick={() => setActiveTab('alerts')}  icon={BellRing}   label="Alerts" />
-          </div>
+            <NavLink active={activeTab === 'heatmap'} onClick={() => setActiveTab('heatmap')} icon={LayoutGrid} label="Sectors" />
+            <NavLink active={activeTab === 'alerts'}  onClick={() => setActiveTab('alerts')}  icon={BellRing}   label="Alerts" />
+          </nav>
         </div>
 
-        <div className="flex items-center gap-4">
-          {error && <div className="text-xs text-red-400 flex items-center gap-1"><AlertCircle size={14}/> Error</div>}
-          {lastUpdated && !loading.screener && apiToken && (
-            <div className="text-xs text-slate-500 hidden md:block">Updated {lastUpdated}</div>
+        {/* Right side */}
+        <div className="flex items-center gap-3">
+          {error && (
+            <div className="flex items-center gap-1 text-xs" style={{ color: 'var(--down)' }}>
+              <AlertCircle size={13} /> Error
+            </div>
           )}
+
           {marketOpen && (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              MARKET OPEN
+            <div
+              className="flex items-center gap-1.5 text-xs font-medium"
+              style={{ color: 'var(--up)' }}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full"
+                style={{ background: 'var(--up)', animation: 'pulse 1.5s ease-in-out infinite' }}
+              />
+              Market open
             </div>
           )}
+
+          {lastUpdated && !loading.screener && apiToken && (
+            <span className="text-xs hidden md:block" style={{ color: 'var(--text-faint)' }}>
+              Updated {lastUpdated}
+            </span>
+          )}
+
           {apiToken && (
-            <div className="px-2 py-1 rounded text-xs border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-              LIVE
-            </div>
+            <span
+              className="text-xs px-2 py-0.5 rounded-chip border font-medium"
+              style={{ color: 'var(--up)', background: 'var(--up-bg)', borderColor: 'var(--up)' }}
+            >
+              Live
+            </span>
           )}
+
           <button
             onClick={pollOnce}
-            disabled={!apiToken}
-            className={`text-slate-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${loading.screener ? 'animate-spin' : ''}`}
-            title={apiToken ? 'Refresh now' : 'Add API token to refresh'}
+            disabled={!apiToken || loading.screener}
+            title={apiToken ? 'Refresh data' : 'Add API token first'}
+            className="btn btn-ghost"
+            style={{ width: 32, padding: 0, justifyContent: 'center' }}
           >
-            <RefreshCw size={16} />
+            <RefreshCw
+              size={14}
+              style={loading.screener ? { animation: 'spin 0.8s linear infinite' } : {}}
+            />
           </button>
+
           <button
             onClick={() => setActiveTab('settings')}
-            className={`p-1.5 rounded-md transition-colors ${activeTab === 'settings' ? 'bg-blue-600/20 text-blue-400' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+            className="btn btn-ghost"
+            style={{
+              width: 32, padding: 0, justifyContent: 'center',
+              ...(activeTab === 'settings' ? { background: 'var(--accent-bg)', color: 'var(--accent)' } : {}),
+            }}
           >
-            <Settings size={18} />
+            <Settings size={14} />
           </button>
         </div>
-      </nav>
+      </header>
 
-      {/* ── Main Content ───────────────────────────────────────────────────── */}
+      {/* ── Page content ─────────────────────────────────────────────────── */}
       <main className="flex-1 overflow-hidden relative">
         {activeTab === 'screener' && (
           <div className="absolute inset-0 flex">
-            <div className="flex-1 overflow-auto border-r border-white/[0.05]">
+            <div
+              className="flex-1 overflow-auto"
+              style={{ borderRight: selectedTicker ? `1px solid var(--border)` : 'none' }}
+            >
               <MarketBreadth />
               <ScreenerTable />
             </div>
             {selectedTicker && (
-              <div className="w-[420px] bg-[#0a111f] border-l border-white/[0.05] overflow-auto flex-shrink-0">
+              <div
+                className="w-[420px] overflow-auto flex-shrink-0"
+                style={{ background: 'var(--bg-subtle)' }}
+              >
                 <StockDetailPanel ticker={selectedTicker} />
               </div>
             )}
@@ -117,20 +178,29 @@ export default function App() {
         {activeTab === 'settings'  && <SettingsPanel />}
       </main>
 
-      {/* ── Portals ────────────────────────────────────────────────────────── */}
+      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      <footer
+        className="px-6 py-2 text-xs border-t flex items-center justify-between"
+        style={{ color: 'var(--text-faint)', borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}
+      >
+        <span>
+          {apiToken
+            ? `Data: Upstox live${lastUpdated ? ` · updated ${lastUpdated}` : ''}`
+            : 'Data: no API token configured — connect in Settings'}
+        </span>
+        <span>Nifty 500 universe · Rule-based signals · Not investment advice</span>
+      </footer>
+
+      {/* ── Chart modal ───────────────────────────────────────────────────── */}
       {chartModalTicker && <ChartModal ticker={chartModalTicker} />}
     </div>
   );
 }
 
-function NavBtn({ active, onClick, icon: Icon, label }) {
+function NavLink({ active, onClick, icon: Icon, label }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all
-        ${active ? 'bg-slate-800 text-blue-400 shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'}`}
-    >
-      <Icon size={14} />
+    <button onClick={onClick} className={`nav-link${active ? ' active' : ''}`}>
+      <Icon size={13} />
       {label}
     </button>
   );

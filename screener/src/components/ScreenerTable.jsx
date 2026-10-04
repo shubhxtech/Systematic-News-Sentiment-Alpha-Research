@@ -1,147 +1,195 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
-import { Search, SlidersHorizontal, Star } from 'lucide-react';
+import { Search, Star, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { SECTORS } from '../lib/upstoxApi';
+import { Delta, RsiCell, RangeBar, signalLabel, signalClass, inr, compactVol, volRatio } from '../lib/format.jsx';
+
+const EN_DASH = '–';
+
+// Columns definition
+const COLUMNS = [
+  { key: 'name',        label: 'Name',          sortable: false },
+  { key: 'ltp',         label: 'Price (₹)',      sortable: true,  align: 'right' },
+  { key: 'changePct',   label: 'Change %',       sortable: true,  align: 'right' },
+  { key: 'volume',      label: 'Volume',         sortable: true,  align: 'right' },
+  { key: 'rsi',         label: 'RSI',            sortable: true,  align: 'right' },
+  { key: '52w',         label: '52w range',      sortable: false, align: 'center' },
+  { key: 'signalScore', label: 'Signal',         sortable: true,  align: 'center' },
+];
 
 export default function ScreenerTable() {
-  const { screenerData, filters, setFilter, selectedTicker, setSelectedTicker, watchlist, toggleWatchlist } = useStore();
+  const {
+    screenerData, filters, setFilter,
+    selectedTicker, setSelectedTicker,
+    watchlist, toggleWatchlist,
+    loading, needsApiToken,
+  } = useStore();
 
-  const data = Object.values(screenerData);
+  // Memoize Object.values to avoid a new array on every render
+  const dataArr = useMemo(() => Object.values(screenerData), [screenerData]);
 
   const filtered = useMemo(() => {
-    return data.filter(d => {
-      if (filters.search && !d.ticker.toLowerCase().includes(filters.search.toLowerCase())) return false;
-      if (filters.sector !== 'All' && d.sector !== filters.sector) return false;
-      if (filters.signal !== 'All' && d.signal !== filters.signal) return false;
-      if (filters.minRSI > 0 || filters.maxRSI < 100) {
-        if (d.rsi == null || d.rsi < filters.minRSI || d.rsi > filters.maxRSI) return false;
-      }
-      if (filters.minScore > 0) {
-        if (d.signalScore == null || d.signalScore < filters.minScore) return false;
-      }
-      if (filters.showWatchlistOnly && !watchlist.includes(d.ticker)) return false;
-      return true;
-    }).sort((a, b) => {
-      const vA = a[filters.sortBy] != null && !isNaN(a[filters.sortBy]) ? a[filters.sortBy] : -Infinity;
-      const vB = b[filters.sortBy] != null && !isNaN(b[filters.sortBy]) ? b[filters.sortBy] : -Infinity;
-      return filters.sortDir === 'desc' ? vB - vA : vA - vB;
-    });
-  }, [data, filters, watchlist]);
+    return dataArr
+      .filter(d => {
+        if (filters.search && !`${d.ticker} ${d.name || ''}`.toLowerCase().includes(filters.search.toLowerCase())) return false;
+        if (filters.sector !== 'All' && d.sector !== filters.sector) return false;
+        if (filters.signal !== 'All' && d.signal !== filters.signal) return false;
+        if (filters.showWatchlistOnly && !watchlist.includes(d.ticker)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const vA = a[filters.sortBy] != null && !isNaN(a[filters.sortBy]) ? a[filters.sortBy] : -Infinity;
+        const vB = b[filters.sortBy] != null && !isNaN(b[filters.sortBy]) ? b[filters.sortBy] : -Infinity;
+        return filters.sortDir === 'desc' ? vB - vA : vA - vB;
+      });
+  }, [dataArr, filters, watchlist]);
 
   const handleSort = (key) => {
     if (filters.sortBy === key) setFilter('sortDir', filters.sortDir === 'desc' ? 'asc' : 'desc');
     else { setFilter('sortBy', key); setFilter('sortDir', 'desc'); }
   };
 
-  const sigColor = (sig) => {
-    if (sig.includes('BUY')) return 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20';
-    if (sig.includes('SELL')) return 'text-red-400 bg-red-500/10 border-red-500/20';
-    return 'text-slate-400 bg-slate-800 border-white/5';
-  };
+  // ── No token state ───────────────────────────────────────────────────────
+  if (needsApiToken) {
+    return (
+      <div className="empty-state" style={{ paddingTop: 80 }}>
+        <Star size={32} style={{ color: 'var(--border-strong)' }} />
+        <p style={{ color: 'var(--text-muted)', maxWidth: 360, textAlign: 'center' }}>
+          Configure your <strong>Upstox API token</strong> in Settings to load real market data.
+          No demo data will be shown.
+        </p>
+      </div>
+    );
+  }
+
+  // ── Loading skeletons ────────────────────────────────────────────────────
+  if (loading.screener && dataArr.length === 0) {
+    return (
+      <div className="overflow-auto">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: 36 }} />
+              {COLUMNS.map(c => <th key={c.key} className={c.align === 'right' ? 'num' : ''}>{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 12 }).map((_, i) => (
+              <tr key={i}>
+                <td colSpan={COLUMNS.length + 1}>
+                  <div className="skeleton" style={{ height: 16, margin: '6px 12px', borderRadius: 4 }} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // ── Empty results ────────────────────────────────────────────────────────
+  if (dataArr.length === 0) {
+    return (
+      <div className="empty-state">
+        <p>No data yet. Data loads in the background after the first quote fetch.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-full bg-[#060b12]">
-      {/* ── Toolbar ──────────────────────────────────────────────────────── */}
-      <div className="p-4 border-b border-white/[0.05] flex items-center gap-4 bg-[#0a111f] sticky top-0 z-10">
+    <div className="flex flex-col h-full">
+      {/* Toolbar */}
+      <div
+        className="flex items-center gap-3 px-4 py-3 sticky top-0 z-10 border-b"
+        style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+      >
+        {/* Search */}
         <div className="relative">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-faint)' }} />
           <input
             type="text"
-            placeholder="Search NSE tickers..."
-            className="input-field pl-8 w-64"
+            placeholder="Search ticker or name…"
+            className="input"
+            style={{ paddingLeft: 28, width: 220 }}
             value={filters.search}
             onChange={e => setFilter('search', e.target.value)}
           />
         </div>
-        
-        <div className="h-4 w-px bg-white/[0.1]"></div>
-        
-        <select className="select-field" value={filters.sector} onChange={e => setFilter('sector', e.target.value)}>
-          <option value="All">All Sectors</option>
+
+        <select
+          className="select"
+          value={filters.sector}
+          onChange={e => setFilter('sector', e.target.value)}
+        >
+          <option value="All">All sectors</option>
           {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        
-        <select className="select-field" value={filters.signal} onChange={e => setFilter('signal', e.target.value)}>
-          <option value="All">All Signals</option>
-          <option value="STRONG BUY">Strong Buy</option>
+
+        <select
+          className="select"
+          value={filters.signal}
+          onChange={e => setFilter('signal', e.target.value)}
+        >
+          <option value="All">All signals</option>
+          <option value="STRONG BUY">Strong buy</option>
           <option value="BUY">Buy</option>
           <option value="NEUTRAL">Neutral</option>
           <option value="SELL">Sell</option>
-          <option value="STRONG SELL">Strong Sell</option>
+          <option value="STRONG SELL">Strong sell</option>
         </select>
 
-        <button 
+        <button
           onClick={() => setFilter('showWatchlistOnly', !filters.showWatchlistOnly)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${filters.showWatchlistOnly ? 'bg-amber-500/20 border-amber-500/30 text-amber-400' : 'bg-slate-800 border-white/[0.07] text-slate-400 hover:text-slate-200'}`}
+          className={`chip${filters.showWatchlistOnly ? ' active' : ''}`}
         >
-          <Star size={14} className={filters.showWatchlistOnly ? 'fill-amber-400' : ''} /> Watchlist
+          <Star size={11} style={filters.showWatchlistOnly ? { fill: 'var(--accent)' } : {}} />
+          Watchlist only
         </button>
-        
-        <div className="ml-auto text-xs text-slate-500 font-mono">
-          {filtered.length} / {data.length} tickers
-        </div>
+
+        <span className="ml-auto text-xs" style={{ color: 'var(--text-faint)' }}>
+          {filtered.length} result{filtered.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
-      {/* ── Table ────────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto">
-        <table className="w-full text-left border-collapse text-sm">
-          <thead className="sticky top-0 bg-[#0a111f] border-b border-white/[0.05] z-10 backdrop-blur-md">
+      {/* Table */}
+      <div className="overflow-auto flex-1">
+        <table className="data-table">
+          <thead>
             <tr>
-              <th className="px-4 py-3 text-xs font-semibold text-slate-400 cursor-pointer hover:text-white w-10">W</th>
-              <Th label="Ticker" sortKey="ticker" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} />
-              <Th label="Sector" sortKey="sector" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} />
-              <Th label="LTP (₹)" sortKey="ltp" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="right" />
-              <Th label="% Chg" sortKey="changePct" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="right" />
-              <Th label="Signal" sortKey="signalScore" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="center" />
-              <Th label="Score" sortKey="signalScore" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="right" />
-              <Th label="RSI" sortKey="rsi" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="right" />
-              <Th label="NLP Sentiment" sortKey="nlpSentiment" curr={filters.sortBy} dir={filters.sortDir} onClick={handleSort} align="right" />
+              {/* Watchlist star */}
+              <th style={{ width: 36, paddingLeft: 12, paddingRight: 4 }} />
+              {COLUMNS.map(c => (
+                <th
+                  key={c.key}
+                  className={c.align === 'right' ? 'num' : ''}
+                  style={{ textAlign: c.align === 'center' ? 'center' : undefined }}
+                  onClick={c.sortable ? () => handleSort(c.key) : undefined}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    {c.label}
+                    {c.sortable && (
+                      filters.sortBy === c.key
+                        ? filters.sortDir === 'desc'
+                          ? <ChevronDown size={11} style={{ color: 'var(--accent)' }} />
+                          : <ChevronUp size={11} style={{ color: 'var(--accent)' }} />
+                        : <ChevronsUpDown size={11} style={{ color: 'var(--text-faint)', opacity: 0.5 }} />
+                    )}
+                  </span>
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
-              <tr><td colSpan={9} className="text-center py-12 text-slate-500">No stocks match your filters</td></tr>
-            ) : (
-              filtered.map(row => {
-                const isSel = selectedTicker === row.ticker;
-                const chgColor = row.changePct >= 0 ? 'text-emerald-400' : 'text-red-400';
-                const isWatch = watchlist.includes(row.ticker);
-                
-                return (
-                  <tr 
-                    key={row.ticker} 
-                    onClick={() => setSelectedTicker(isSel ? null : row.ticker)}
-                    className={`border-b border-white/[0.02] hover:bg-white/[0.02] cursor-pointer transition-colors ${isSel ? 'bg-blue-900/20' : ''}`}
-                  >
-                    <td className="px-4 py-3" onClick={e => { e.stopPropagation(); toggleWatchlist(row.ticker); }}>
-                      <Star size={16} className={`cursor-pointer transition-colors ${isWatch ? 'text-amber-400 fill-amber-400' : 'text-slate-600 hover:text-slate-400'}`} />
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-slate-200">{row.ticker}</td>
-                    <td className="px-4 py-3 text-slate-400 text-xs">{row.sector}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-300">
-                      {row.ltp ? row.ltp.toFixed(2) : '-'}
-                    </td>
-                    <td className={`px-4 py-3 text-right font-mono ${chgColor}`}>
-                      {row.changePct != null ? `${row.changePct > 0 ? '+' : ''}${row.changePct.toFixed(2)}%` : '-'}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2 py-1 rounded text-[10px] font-bold border ${sigColor(row.signal || '')}`}>
-                        {row.signal || '-'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-300">{row.signalScore ?? '-'}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-400">{row.rsi ? row.rsi.toFixed(1) : '-'}</td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-400">
-                      {row.nlpSentiment != null ? (
-                        <span className={row.nlpSentiment > 0.2 ? 'text-emerald-400' : row.nlpSentiment < -0.2 ? 'text-red-400' : 'text-slate-400'}>
-                          {row.nlpSentiment.toFixed(2)}
-                        </span>
-                      ) : '-'}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
+            {filtered.map(row => (
+              <TableRow
+                key={row.ticker}
+                row={row}
+                isSelected={selectedTicker === row.ticker}
+                isWatched={watchlist.includes(row.ticker)}
+                onSelect={() => setSelectedTicker(selectedTicker === row.ticker ? null : row.ticker)}
+                onToggleWatch={() => toggleWatchlist(row.ticker)}
+              />
+            ))}
           </tbody>
         </table>
       </div>
@@ -149,21 +197,75 @@ export default function ScreenerTable() {
   );
 }
 
-function Th({ label, sortKey, curr, dir, onClick, align = 'left' }) {
-  const active = curr === sortKey;
+function TableRow({ row, isSelected, isWatched, onSelect, onToggleWatch }) {
   return (
-    <th 
-      onClick={() => onClick(sortKey)}
-      className={`px-4 py-3 text-xs font-semibold text-slate-400 cursor-pointer hover:text-white transition-colors select-none text-${align}`}
+    <tr
+      style={isSelected ? { background: 'var(--accent-bg)' } : undefined}
+      onClick={onSelect}
+      role="button"
+      tabIndex={0}
+      onKeyDown={e => e.key === 'Enter' && onSelect()}
+      aria-selected={isSelected}
     >
-      <div className={`flex items-center gap-1 justify-${align === 'right' ? 'end' : align === 'center' ? 'center' : 'start'}`}>
-        {label}
-        {active && (
-          <span className="text-blue-500 text-[10px]">
-            {dir === 'desc' ? '▼' : '▲'}
-          </span>
-        )}
-      </div>
-    </th>
+      {/* Watchlist button */}
+      <td style={{ paddingLeft: 12, paddingRight: 4, width: 36 }}>
+        <button
+          aria-label={isWatched ? `Remove ${row.ticker} from watchlist` : `Add ${row.ticker} to watchlist`}
+          onClick={e => { e.stopPropagation(); onToggleWatch(); }}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+            color: isWatched ? '#f59e0b' : 'var(--border-strong)',
+          }}
+        >
+          <Star size={13} style={isWatched ? { fill: '#f59e0b' } : {}} />
+        </button>
+      </td>
+
+      {/* Name + ticker */}
+      <td>
+        <div className="font-medium text-sm" style={{ color: 'var(--text)' }}>
+          {row.name || row.ticker}
+        </div>
+        <div className="text-xs" style={{ color: 'var(--text-faint)' }}>
+          {row.ticker}
+          {row.sector && <span style={{ marginLeft: 6 }}>· {row.sector}</span>}
+        </div>
+      </td>
+
+      {/* Price */}
+      <td className="num">
+        {row.ltp != null ? `₹${inr(row.ltp)}` : EN_DASH}
+      </td>
+
+      {/* Change % */}
+      <td className="num">
+        <Delta value={row.changePct} />
+      </td>
+
+      {/* Volume */}
+      <td className="num" style={{ color: 'var(--text-muted)' }}>
+        {compactVol(row.volume)}
+      </td>
+
+      {/* RSI */}
+      <td className="num">
+        <RsiCell value={row.rsi} />
+      </td>
+
+      {/* 52w range */}
+      <td style={{ textAlign: 'center' }}>
+        <RangeBar low={row.week52Low} high={row.week52High} current={row.ltp} />
+      </td>
+
+      {/* Signal badge */}
+      <td style={{ textAlign: 'center' }}>
+        {row.signal
+          ? <span className={`signal-badge ${signalClass(row.signal)}`}>{signalLabel(row.signal)}</span>
+          : <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+              {row.signalWarning ? 'Loading…' : EN_DASH}
+            </span>
+        }
+      </td>
+    </tr>
   );
 }
