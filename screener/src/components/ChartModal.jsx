@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { useStore } from '../lib/store';
 import { X, Layers } from 'lucide-react';
-import { createChart, CrosshairMode } from 'lightweight-charts';
+import { createChart, CrosshairMode, CandlestickSeries, LineSeries, HistogramSeries } from 'lightweight-charts';
 import { ema } from '../lib/indicators';
 import { UNIVERSE } from '../lib/upstoxApi';
 
@@ -80,7 +80,7 @@ export default function ChartModal({ ticker }) {
     });
 
     // Price Candlesticks
-    const candlestickSeries = chart.addCandlestickSeries({
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: 'var(--up)',
       downColor: 'var(--down)',
       borderVisible: false,
@@ -91,7 +91,7 @@ export default function ChartModal({ ticker }) {
 
     // EMA 21
     if (overlays.ema21) {
-      const ema21Series = chart.addLineSeries({
+      const ema21Series = chart.addSeries(LineSeries, {
         color: 'var(--accent)',
         lineWidth: 2,
         title: 'EMA 21'
@@ -101,7 +101,7 @@ export default function ChartModal({ ticker }) {
 
     // EMA 50
     if (overlays.ema50) {
-      const ema50Series = chart.addLineSeries({
+      const ema50Series = chart.addSeries(LineSeries, {
         color: '#f59e0b', // Amber/orange
         lineWidth: 2,
         title: 'EMA 50'
@@ -110,10 +110,12 @@ export default function ChartModal({ ticker }) {
     }
 
     // Volume Histogram (Auto-scaled to bottom 20% of pane)
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       color: 'var(--accent)',
       priceFormat: { type: 'volume' },
       priceScaleId: '', // Set to empty string to attach to an overlay scale
+    });
+    volumeSeries.priceScale().applyOptions({
       scaleMargins: {
         top: 0.8, // Push to bottom 20%
         bottom: 0,
