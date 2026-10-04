@@ -14,6 +14,15 @@ export const useStore = create((set, get) => ({
     set({ apiToken: token });
   },
 
+  // ── Telegram Config ───────────────────────────────────────────────────────
+  telegramBotToken: localStorage.getItem('tg_bot_token') || '',
+  telegramChatId:   localStorage.getItem('tg_chat_id')   || '',
+  setTelegramConfig: (botToken, chatId) => {
+    localStorage.setItem('tg_bot_token', botToken);
+    localStorage.setItem('tg_chat_id', chatId);
+    set({ telegramBotToken: botToken, telegramChatId: chatId });
+  },
+
   // ── UI ────────────────────────────────────────────────────────────────────
   activeTab: 'screener',
   setActiveTab: (tab) => set({ activeTab: tab }),
@@ -23,7 +32,7 @@ export const useStore = create((set, get) => ({
   setChartModalTicker: (t) => set({ chartModalTicker: t }),
 
   // ── State Flags ───────────────────────────────────────────────────────────
-  loading: { screener: false, backtest: false },
+  loading: { screener: false, candles: false },
   setLoading: (key, val) => set(s => ({ loading: { ...s.loading, [key]: val } })),
   error: null,
   setError: (e) => set({ error: e }),
@@ -53,6 +62,17 @@ export const useStore = create((set, get) => ({
 
   // ── Watchlist ─────────────────────────────────────────────────────────────
   watchlist: savedWatchlist,
+  addToWatchlist: (ticker) => set(s => {
+    if (s.watchlist.includes(ticker)) return {};
+    const next = [...s.watchlist, ticker.toUpperCase().trim()];
+    localStorage.setItem('sc_watchlist', JSON.stringify(next));
+    return { watchlist: next };
+  }),
+  removeFromWatchlist: (ticker) => set(s => {
+    const next = s.watchlist.filter(t => t !== ticker);
+    localStorage.setItem('sc_watchlist', JSON.stringify(next));
+    return { watchlist: next };
+  }),
   toggleWatchlist: (ticker) => set(s => {
     const next = s.watchlist.includes(ticker)
       ? s.watchlist.filter(t => t !== ticker)
@@ -74,7 +94,7 @@ export const useStore = create((set, get) => ({
     return { alerts: next };
   }),
   triggerAlert: (id) => set(s => ({
-    alerts: s.alerts.map(a => a.id === id ? { ...a, triggered: true } : a)
+    alerts: s.alerts.map(a => a.id === id ? { ...a, triggered: true, triggeredAt: new Date().toISOString() } : a)
   })),
 
   // ── Filters ───────────────────────────────────────────────────────────────
@@ -85,23 +105,4 @@ export const useStore = create((set, get) => ({
     sortBy: 'signalScore', sortDir: 'desc',
   },
   setFilter: (key, val) => set(s => ({ filters: { ...s.filters, [key]: val } })),
-
-  // ── Backtest ──────────────────────────────────────────────────────────────
-  backtestConfig: {
-    ticker: 'RELIANCE', strategy: 'full_alpha',
-    startDate: '2023-01-01',
-    endDate: new Date().toISOString().split('T')[0],
-    stopLoss: 5, takeProfit: 15, costs: 20, rebalance: 'monthly',
-  },
-  setBacktestConfig: (patch) => set(s => ({ backtestConfig: { ...s.backtestConfig, ...patch } })),
-  backtestResult: null,
-  setBacktestResult: (r) => set({ backtestResult: r }),
-  backtestRunning: false,
-  setBacktestRunning: (v) => set({ backtestRunning: v }),
-
-  // ── Loading ───────────────────────────────────────────────────────────────
-  loading: { screener: false, candles: false, backtest: false },
-  setLoading: (key, val) => set(s => ({ loading: { ...s.loading, [key]: val } })),
-  error: null,
-  setError: (e) => set({ error: e }),
 }));

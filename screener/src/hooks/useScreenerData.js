@@ -1,11 +1,12 @@
 /**
  * useScreenerData.js
- * Polls Upstox API every 30s, falls back to synthetic demo data without a token.
+ * Polls Upstox API every 30s for universe stocks.
+ * Also fetches data for custom watchlist tickers on demand.
  */
 import { useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../lib/store';
 import { TICKERS, UNIVERSE, getMarketQuotes, getHistoricalCandles, testConnection } from '../lib/upstoxApi';
-import { computeSignalScore, ema, rsi } from '../lib/indicators';
+import { computeSignalScore } from '../lib/indicators';
 
 // ── Demo price seeds (realistic NSE levels) ────────────────────────────────
 const PRICE_SEEDS = {
@@ -24,7 +25,6 @@ function nextDemoPrice(ticker) {
   return demoPrices[ticker];
 }
 
-// Pre-build 252 days of synthetic daily candles
 const demoCandles = {};
 function getDemoCandles(ticker) {
   if (demoCandles[ticker]) return demoCandles[ticker];
@@ -53,26 +53,16 @@ export function useScreenerData() {
     apiToken, setScreenerData, updateTicker,
     setCandleCache, candleCache, setNLPSentiments,
     setMarketOpen, setLastUpdated, setLoading, nlpSentiments,
+    watchlist,
   } = useStore();
 
   const isDemo = !apiToken;
 
-  // Fetch NLP sentiments from the Python backend
-  const fetchNLP = useCallback(async () => {
-    try {
-      const res = await fetch('/api/screener');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data?.scores) setNLPSentiments(data.scores);
-    } catch { /* backend not running — ignore */ }
-  }, [setNLPSentiments]);
-
-  // Main poll function
+  // Main screener poll
   const poll = useCallback(async () => {
     setLoading('screener', true);
     try {
       if (isDemo) {
-        // ── Demo mode: generate synthetic data ──────────────────────────
         const now = new Date();
         const data = {};
         for (const ticker of TICKERS) {
@@ -97,39 +87,35 @@ export function useScreenerData() {
             week52High: Math.max(...candles.slice(-252).map(c => c.high)),
             week52Low:  Math.min(...candles.slice(-252).map(c => c.low)),
           };
-          if (!candleCache[ticker]) setCandleCache(ticker, candles);
+          if (!candleCache[ticker]) setCandleCache(ticker, { daily: candles, intraday: [] });
         }
         setScreenerData(data);
         setMarketOpen(false);
       } else {
-        // ── Live mode: call Upstox API ──────────────────────────────────
+        // ── Live mode ──────────────────────────────────────────────────────
         const marketOpen = await testConnection().catch(() => false);
         setMarketOpen(marketOpen);
 
         const quotes = await getMarketQuotes();
         const keys = Object.keys(quotes);
         setScreenerData(prevData => {
-          let data = { ...prevData }; // preserve previous state
-          
-          // 1. Instant UI update with LTP
+          let data = { ...prevData };
           for (const k of keys) {
             const q = quotes[k];
-            const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t].key === k) || k.split(':')[1];
+            const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t]?.key === k) || k.split(':')[1];
             if (!ticker || !UNIVERSE[ticker]) continue;
-            
+
             let prev = data[ticker] || {};
-            let candles = candleCache[ticker]; // this is now {daily, intraday}
-            
+            let candles = candleCache[ticker];
             const avgVol = candles?.daily ? candles.daily.slice(-20).reduce((a, c) => a + c.volume, 0) / 20 || 1 : 1;
             const nlp  = nlpSentiments[ticker] ?? 0;
-            
-            let indicators = prev; // retain previous indicators if candles not loaded
+
+            let indicators = prev;
             if (candles?.daily?.length) {
-               // Compute signal based on Daily to ensure stability (since 5m intraday might only have a few ticks early in the day)
-               const { score, signal, breakdown, indicators: ind } = computeSignalScore(candles.daily, nlp, 50);
-               indicators = { signalScore: score, signal, breakdown, rsi: ind?.rsiVal, ema21: ind?.ema21, ema50: ind?.ema50, adx: ind?.adxVal, bbUp: ind?.bbUp, bbLow: ind?.bbLow, stTrend: ind?.stTrend };
+              const { score, signal, breakdown, indicators: ind } = computeSignalScore(candles.daily, nlp, 50);
+              indicators = { signalScore: score, signal, breakdown, rsi: ind?.rsiVal, ema21: ind?.ema21, ema50: ind?.ema50, adx: ind?.adxVal, bbUp: ind?.bbUp, bbLow: ind?.bbLow, stTrend: ind?.stTrend };
             }
-            
+
             data[ticker] = {
               ticker, ...UNIVERSE[ticker], ...indicators,
               ltp: q.last_price, open: q.ohlc?.open, high: q.ohlc?.high, low: q.ohlc?.low,
@@ -140,23 +126,21 @@ export function useScreenerData() {
             };
           }
           return data;
-        }); // INSTANT UPDATE
-        
-        // 2. Background Historical Fetch (Progressive)
+        });
+
+        // Background history fetch
         if (!window.__isFetchingHistory) {
           window.__isFetchingHistory = true;
           (async () => {
             try {
               for (const k of keys) {
                 const q = quotes[k];
-                const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t].key === k) || k.split(':')[1];
+                const ticker = q.symbol || TICKERS.find(t => UNIVERSE[t]?.key === k) || k.split(':')[1];
                 if (!ticker || !UNIVERSE[ticker]) continue;
                 if (!candleCache[ticker]) {
                   const data = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
-                  if (data.daily.length || data.intraday.length) {
-                    setCandleCache(ticker, data);
-                  }
-                  await new Promise(r => setTimeout(r, 1500)); // Extremely safe rate limit
+                  if (data.daily.length || data.intraday.length) setCandleCache(ticker, data);
+                  await new Promise(r => setTimeout(r, 1500));
                 }
               }
             } finally {
@@ -173,26 +157,63 @@ export function useScreenerData() {
     }
   }, [apiToken, nlpSentiments, candleCache, isDemo]);
 
+  // ── Watchlist ticker fetch (for custom tickers not in universe_500) ─────
+  const fetchWatchlistTicker = useCallback(async (ticker) => {
+    if (!apiToken) return; // no-op in demo
+    if (candleCache[ticker]) return; // already fetched
+
+    try {
+      setLoading('candles', true);
+      const candles = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+      if (candles.daily.length) {
+        setCandleCache(ticker, candles);
+        const { score, signal, breakdown, indicators } = computeSignalScore(candles.daily, 0, 50);
+        updateTicker(ticker, {
+          ticker,
+          name: ticker,
+          sector: 'Watchlist',
+          signalScore: score, signal, breakdown,
+          rsi: indicators?.rsiVal, ema21: indicators?.ema21, ema50: indicators?.ema50,
+          adx: indicators?.adxVal, bbUp: indicators?.bbUp, bbLow: indicators?.bbLow,
+          stTrend: indicators?.stTrend,
+          ltp: candles.daily[candles.daily.length - 1]?.close,
+          changePct: 0,
+          week52High: Math.max(...candles.daily.map(c => c.high)),
+          week52Low:  Math.min(...candles.daily.map(c => c.low)),
+        });
+      }
+    } catch (e) {
+      console.error('[watchlist fetch]', ticker, e);
+    } finally {
+      setLoading('candles', false);
+    }
+  }, [apiToken, candleCache, setCandleCache, updateTicker, setLoading]);
 
   useEffect(() => {
-    fetchNLP();
-    const nlpInterval = setInterval(fetchNLP, 60000);
     let timerId;
     let isUnmounted = false;
 
     const runPoll = async () => {
       if (isUnmounted) return;
       await poll();
-      if (!isUnmounted) timerId = setTimeout(runPoll, 5000);
+      if (!isUnmounted) timerId = setTimeout(runPoll, 30000); // 30s poll
     };
     runPoll();
 
-    return () => { 
+    return () => {
       isUnmounted = true;
-      clearInterval(nlpInterval); 
-      clearTimeout(timerId); 
+      clearTimeout(timerId);
     };
-  }, [poll, fetchNLP]);
+  }, [poll]);
 
-  return { pollOnce: poll };
+  // Fetch custom watchlist tickers that are NOT in universe
+  useEffect(() => {
+    if (!apiToken) return;
+    const customTickers = watchlist.filter(t => !UNIVERSE[t]);
+    for (const ticker of customTickers) {
+      fetchWatchlistTicker(ticker);
+    }
+  }, [watchlist, apiToken, fetchWatchlistTicker]);
+
+  return { pollOnce: poll, fetchWatchlistTicker };
 }
