@@ -157,29 +157,57 @@ export function useScreenerData() {
     }
   }, [apiToken, nlpSentiments, candleCache, isDemo]);
 
-  // ── Watchlist ticker fetch (for custom tickers not in universe_500) ─────
-  const fetchWatchlistTicker = useCallback(async (ticker) => {
-    if (!apiToken) return; // no-op in demo
-    if (candleCache[ticker]) return; // already fetched
+  // ── Watchlist ticker fetch ────────────────────────────────────────────────
+  // Works in both demo mode (generates synthetic candles) and live mode.
+  // `force` skips the already-cached check.
+  const fetchWatchlistTicker = useCallback(async (ticker, force = false) => {
+    if (!force && candleCache[ticker]?.daily?.length) return; // already have data
 
     try {
       setLoading('candles', true);
-      const candles = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+
+      let candles;
+      if (!apiToken) {
+        // ── Demo mode: generate synthetic candles ──────────────────────────
+        const seed = PRICE_SEEDS[ticker] || 1200;
+        let price = seed * 0.75;
+        const daily = [];
+        const now = new Date();
+        for (let i = 365; i >= 0; i--) {
+          const d = new Date(now);
+          d.setDate(d.getDate() - i);
+          price *= 1 + (Math.random() - 0.49) * 0.018;
+          const open  = price * (1 + (Math.random() - 0.5) * 0.005);
+          const close = price;
+          const high  = Math.max(open, close) * (1 + Math.random() * 0.01);
+          const low   = Math.min(open, close) * (1 - Math.random() * 0.01);
+          const vol   = Math.floor(300000 + Math.random() * 2000000);
+          daily.push({ date: d.toISOString(), open, high, low, close, volume: vol });
+        }
+        candles = { daily, intraday: [] };
+      } else {
+        // ── Live mode: fetch from Upstox ─────────────────────────────────
+        candles = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+      }
+
       if (candles.daily.length) {
         setCandleCache(ticker, candles);
         const { score, signal, breakdown, indicators } = computeSignalScore(candles.daily, 0, 50);
+        const lastCandle = candles.daily[candles.daily.length - 1];
+        const prevCandle = candles.daily[candles.daily.length - 2];
+        const changePct  = prevCandle ? ((lastCandle.close - prevCandle.close) / prevCandle.close) * 100 : 0;
         updateTicker(ticker, {
           ticker,
-          name: ticker,
-          sector: 'Watchlist',
+          name: UNIVERSE[ticker]?.name || ticker,
+          sector: UNIVERSE[ticker]?.sector || 'Watchlist',
           signalScore: score, signal, breakdown,
           rsi: indicators?.rsiVal, ema21: indicators?.ema21, ema50: indicators?.ema50,
           adx: indicators?.adxVal, bbUp: indicators?.bbUp, bbLow: indicators?.bbLow,
           stTrend: indicators?.stTrend,
-          ltp: candles.daily[candles.daily.length - 1]?.close,
-          changePct: 0,
-          week52High: Math.max(...candles.daily.map(c => c.high)),
-          week52Low:  Math.min(...candles.daily.map(c => c.low)),
+          ltp: lastCandle?.close,
+          changePct,
+          week52High: Math.max(...candles.daily.slice(-252).map(c => c.high)),
+          week52Low:  Math.min(...candles.daily.slice(-252).map(c => c.low)),
         });
       }
     } catch (e) {
@@ -206,14 +234,12 @@ export function useScreenerData() {
     };
   }, [poll]);
 
-  // Fetch custom watchlist tickers that are NOT in universe
+  // Eagerly fetch all watchlist tickers on mount / watchlist change
   useEffect(() => {
-    if (!apiToken) return;
-    const customTickers = watchlist.filter(t => !UNIVERSE[t]);
-    for (const ticker of customTickers) {
-      fetchWatchlistTicker(ticker);
+    for (const ticker of watchlist) {
+      fetchWatchlistTicker(ticker); // skips if already cached
     }
-  }, [watchlist, apiToken, fetchWatchlistTicker]);
+  }, [watchlist]); // intentionally exclude fetchWatchlistTicker to avoid loop
 
   return { pollOnce: poll, fetchWatchlistTicker };
 }

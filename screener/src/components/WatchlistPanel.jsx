@@ -136,13 +136,18 @@ export default function WatchlistPanel() {
     setAdding(true);
     setAddError('');
     addToWatchlist(ticker);
-    // If not in universe, try to fetch
-    if (!UNIVERSE[ticker]) {
-      await fetchWatchlistTicker(ticker);
-    }
+    
+    // Fetch data immediately for the newly added ticker
+    await fetchWatchlistTicker(ticker);
+    
     setInput('');
     setAdding(false);
     setSelected(ticker);
+  };
+
+  const handleSelect = (ticker) => {
+    setSelected(ticker);
+    fetchWatchlistTicker(ticker);
   };
 
   const handleRemove = (ticker) => {
@@ -245,7 +250,7 @@ export default function WatchlistPanel() {
               return (
                 <div
                   key={ticker}
-                  onClick={() => setSelected(ticker)}
+                  onClick={() => handleSelect(ticker)}
                   className={`px-4 py-3 border-b border-white/[0.03] cursor-pointer flex items-center justify-between transition-all
                     ${isSelected ? 'bg-blue-900/20 border-l-2 border-l-blue-500' : 'hover:bg-white/[0.02]'}`}
                 >
