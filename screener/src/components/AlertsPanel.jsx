@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../lib/store';
-import { Bell, Plus, Trash2, CheckCircle2, Send, Loader2 } from 'lucide-react';
+import { Bell, Plus, Trash2, CheckCircle2, Send } from 'lucide-react';
 import { TICKERS } from '../lib/upstoxApi';
+import { inr } from '../lib/format';
 
 async function sendTelegram(botToken, chatId, message) {
   if (!botToken || !chatId) return false;
@@ -23,8 +24,6 @@ export default function AlertsPanel() {
   const [metric, setMetric] = useState('price');
   const [condition, setCondition] = useState('above');
   const [value, setValue] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState(null);
 
   // All available tickers = universe + watchlist
   const allTickers = [...new Set([...TICKERS, ...watchlist])].sort();
@@ -92,35 +91,24 @@ export default function AlertsPanel() {
     setValue('');
   };
 
-  const handleTestTelegram = async () => {
-    setTesting(true);
-    setTestResult(null);
-    const ok = await sendTelegram(
-      telegramBotToken, telegramChatId,
-      `✅ <b>Quant Screener</b> connected!\n\nYour alerts will be delivered here.`
-    );
-    setTestResult(ok ? 'success' : 'fail');
-    setTesting(false);
-  };
-
   const tgConfigured = !!(telegramBotToken && telegramChatId);
 
   return (
     <div className="p-8 max-w-4xl mx-auto h-full flex flex-col gap-8 overflow-auto">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-purple-600 flex items-center justify-center shadow-lg shadow-purple-900/20">
-          <Bell className="text-white" />
+        <div className="w-10 h-10 rounded-md bg-[var(--accent)] flex items-center justify-center text-white">
+          <Bell size={20} />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Alerts Engine</h1>
-          <p className="text-slate-400 text-sm mt-1">Set conditions. Get instant browser + Telegram notifications.</p>
+          <h1 className="text-2xl font-bold text-[var(--text)] tracking-tight">Alerts Engine</h1>
+          <p className="text-muted text-sm mt-1">Set conditions. Get instant browser + Telegram notifications.</p>
         </div>
         {tgConfigured ? (
-          <div className="ml-auto flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1.5 rounded-lg">
+          <div className="ml-auto flex items-center gap-2 text-xs bg-[var(--up-bg)] text-[var(--up)] px-3 py-1.5 rounded">
             <Send size={12} /> Telegram Connected
           </div>
         ) : (
-          <div className="ml-auto flex items-center gap-2 text-xs text-slate-500 bg-slate-800 border border-white/5 px-3 py-1.5 rounded-lg">
+          <div className="ml-auto flex items-center gap-2 text-xs bg-[var(--bg-subtle)] text-muted px-3 py-1.5 rounded border border-[var(--border)]">
             <Send size={12} /> Telegram not configured (go to Settings)
           </div>
         )}
@@ -128,18 +116,18 @@ export default function AlertsPanel() {
 
       {/* Create Alert */}
       <div className="card p-6">
-        <h3 className="font-semibold text-white mb-4">Create New Alert</h3>
+        <h3 className="font-semibold text-[var(--text)] mb-4">Create New Alert</h3>
         <form onSubmit={handleAdd} className="flex gap-4 items-end flex-wrap">
           <div className="flex flex-col gap-1.5 flex-1 min-w-[120px]">
-            <label className="text-xs text-slate-500 uppercase font-semibold">Ticker</label>
-            <select className="select-field" value={ticker} onChange={e => setTicker(e.target.value)}>
+            <label className="text-xs text-muted uppercase font-semibold">Ticker</label>
+            <select className="select" value={ticker} onChange={e => setTicker(e.target.value)}>
               {allTickers.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
 
           <div className="flex flex-col gap-1.5 flex-1 min-w-[120px]">
-            <label className="text-xs text-slate-500 uppercase font-semibold">Metric</label>
-            <select className="select-field" value={metric} onChange={e => { setMetric(e.target.value); setValue(''); }}>
+            <label className="text-xs text-muted uppercase font-semibold">Metric</label>
+            <select className="select" value={metric} onChange={e => { setMetric(e.target.value); setValue(''); }}>
               <option value="price">Price (LTP)</option>
               <option value="rsi">RSI</option>
               <option value="signal">Quant Signal</option>
@@ -149,21 +137,21 @@ export default function AlertsPanel() {
           {metric !== 'signal' ? (
             <>
               <div className="flex flex-col gap-1.5 w-36">
-                <label className="text-xs text-slate-500 uppercase font-semibold">Condition</label>
-                <select className="select-field" value={condition} onChange={e => setCondition(e.target.value)}>
+                <label className="text-xs text-muted uppercase font-semibold">Condition</label>
+                <select className="select" value={condition} onChange={e => setCondition(e.target.value)}>
                   <option value="above">Crosses Above</option>
                   <option value="below">Crosses Below</option>
                 </select>
               </div>
               <div className="flex flex-col gap-1.5 flex-1 min-w-[100px]">
-                <label className="text-xs text-slate-500 uppercase font-semibold">Target Value</label>
-                <input type="number" step="any" className="input-field" value={value} onChange={e => setValue(e.target.value)} placeholder="e.g. 1500" required />
+                <label className="text-xs text-muted uppercase font-semibold">Target Value</label>
+                <input type="number" step="any" className="input" value={value} onChange={e => setValue(e.target.value)} placeholder="e.g. 1500" required />
               </div>
             </>
           ) : (
             <div className="flex flex-col gap-1.5 flex-[2] min-w-[140px]">
-              <label className="text-xs text-slate-500 uppercase font-semibold">Target Signal</label>
-              <select className="select-field" value={value} onChange={e => setValue(e.target.value)} required>
+              <label className="text-xs text-muted uppercase font-semibold">Target Signal</label>
+              <select className="select" value={value} onChange={e => setValue(e.target.value)} required>
                 <option value="" disabled>Select Signal...</option>
                 <option value="BUY">BUY (includes Strong Buy)</option>
                 <option value="STRONG BUY">STRONG BUY only</option>
@@ -173,7 +161,7 @@ export default function AlertsPanel() {
             </div>
           )}
 
-          <button type="submit" className="btn-primary h-[34px] px-6">
+          <button type="submit" className="btn btn-primary h-[34px] px-6">
             <Plus size={16} /> Add
           </button>
         </form>
@@ -181,33 +169,33 @@ export default function AlertsPanel() {
 
       {/* Active Alerts */}
       <div className="flex-1">
-        <h3 className="font-semibold text-white mb-4">Active Alerts ({alerts.length})</h3>
+        <h3 className="font-semibold text-[var(--text)] mb-4">Active Alerts ({alerts.length})</h3>
         {alerts.length === 0 ? (
-          <div className="text-center p-12 border border-dashed border-white/10 rounded-xl text-slate-500">
+          <div className="empty-state">
             No alerts configured. Add one above.
           </div>
         ) : (
           <div className="space-y-3">
             {alerts.map(alert => (
-              <div key={alert.id} className={`card p-4 flex items-center justify-between ${alert.triggered ? 'border-emerald-500/30 bg-emerald-500/5' : ''}`}>
+              <div key={alert.id} className={`card p-4 flex items-center justify-between ${alert.triggered ? 'bg-[var(--up-bg)] border-[var(--up)]' : ''}`}>
                 <div className="flex items-center gap-4">
                   {alert.triggered
-                    ? <CheckCircle2 className="text-emerald-500" size={20} />
-                    : <div className="w-2 h-2 rounded-full bg-blue-500 pulse-dot" />
+                    ? <CheckCircle2 className="text-[var(--up)]" size={20} />
+                    : <div className="w-2 h-2 rounded-full bg-[var(--accent)]" />
                   }
                   <div>
-                    <div className="font-bold text-white">{alert.ticker}</div>
-                    <div className="text-sm text-slate-400 font-mono mt-1">
+                    <div className="font-bold text-[var(--text)]">{alert.ticker}</div>
+                    <div className="text-sm text-muted font-mono mt-1">
                       {alert.metric.toUpperCase()} {alert.metric !== 'signal' ? (alert.condition === 'above' ? '≥' : '≤') : '='} {alert.value}
                     </div>
                     {alert.triggeredAt && (
-                      <div className="text-[10px] text-slate-600 mt-0.5">Triggered: {new Date(alert.triggeredAt).toLocaleTimeString('en-IN')}</div>
+                      <div className="text-[10px] text-muted mt-0.5">Triggered: {new Date(alert.triggeredAt).toLocaleTimeString('en-IN')}</div>
                     )}
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {alert.triggered && <span className="text-xs font-bold text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded">TRIGGERED</span>}
-                  <button onClick={() => removeAlert(alert.id)} className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                  {alert.triggered && <span className="text-xs font-bold text-[var(--up)] bg-[var(--up-bg)] px-2 py-1 rounded">TRIGGERED</span>}
+                  <button onClick={() => removeAlert(alert.id)} className="p-2 text-muted hover:text-[var(--down)] hover:bg-[var(--bg-subtle)] rounded transition-colors">
                     <Trash2 size={16} />
                   </button>
                 </div>
