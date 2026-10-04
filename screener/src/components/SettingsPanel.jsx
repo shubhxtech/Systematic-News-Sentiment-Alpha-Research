@@ -24,6 +24,7 @@ export default function SettingsPanel() {
     }
   };
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { checkToken(apiToken); }, [apiToken]);
 
   const handleSaveToken = () => setApiToken(tokenInput);
