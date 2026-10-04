@@ -120,16 +120,58 @@ export default function StockDetailPanel({ ticker }) {
               News Sentiment (FinBERT)
             </span>
           </div>
-          <div className="p-4 flex items-center justify-between">
-            <span className="text-xs text-muted">Latest analysis</span>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold" style={{ color: nlpColor }}>
-                {nlpLabel}
-              </span>
-              <span className="text-xs font-mono text-muted bg-[var(--bg-subtle)] px-2 py-0.5 rounded">
-                {data.nlpSentiment != null ? data.nlpSentiment.toFixed(2) : 'N/A'}
+          <div className="p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted">7-Day Score ({data.nlpSummary?.n_articles_7d || 0} articles)</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold" style={{ color: nlpColor }}>
+                  {nlpLabel}
+                </span>
+                <span className="text-xs font-mono text-muted bg-[var(--bg-subtle)] px-2 py-0.5 rounded">
+                  {data.nlpSentiment != null ? (data.nlpSentiment > 0 ? '+' : '') + data.nlpSentiment.toFixed(2) : 'N/A'}
+                </span>
+              </div>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted">30-Day Score</span>
+              <span className="text-xs font-mono" style={{ color: 'var(--text)' }}>
+                {data.nlpSummary?.score_30d != null ? (data.nlpSummary.score_30d > 0 ? '+' : '') + data.nlpSummary.score_30d.toFixed(2) : 'N/A'}
               </span>
             </div>
+            
+            <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 mt-1">
+              <span className="text-xs text-muted">Change vs 30D</span>
+              <span className="text-xs font-mono font-medium" style={{ color: data.nlpSummary?.change_vs_30d > 0 ? 'var(--up)' : data.nlpSummary?.change_vs_30d < 0 ? 'var(--down)' : 'var(--text)' }}>
+                {data.nlpSummary?.change_vs_30d != null ? (data.nlpSummary.change_vs_30d > 0 ? '▲ +' : '▼ ') + data.nlpSummary.change_vs_30d.toFixed(2) : 'N/A'}
+              </span>
+            </div>
+          </div>
+        </div>
+        
+        {/* ── Fundamentals ───────────────────────────────────────────────── */}
+        <div className="card">
+          <div className="card-header">
+            <span className="card-title flex items-center gap-2">
+              <Activity size={14} style={{ color: 'var(--text-faint)' }} /> 
+              Fundamental Quality
+            </span>
+          </div>
+          <div className="p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-muted">Quality Score (0-100)</span>
+              <span className="text-lg font-bold num" style={{ color: data.fundamentalScore >= 60 ? 'var(--up)' : data.fundamentalScore < 40 ? 'var(--down)' : 'var(--text)' }}>
+                {data.fundamentalScore != null ? data.fundamentalScore : 'N/A'}
+              </span>
+            </div>
+            {data.fundamentals && (
+              <div className="grid grid-cols-2 gap-y-3 gap-x-2">
+                <Stat label="P/E Ratio" value={data.fundamentals.pe?.toFixed(1)} />
+                <Stat label="ROE" value={data.fundamentals.roe != null ? (data.fundamentals.roe * 100).toFixed(1) + '%' : null} />
+                <Stat label="Debt/Equity" value={data.fundamentals.debt_equity?.toFixed(2)} />
+                <Stat label="Net Margin" value={data.fundamentals.net_margin != null ? (data.fundamentals.net_margin * 100).toFixed(1) + '%' : null} />
+              </div>
+            )}
           </div>
         </div>
 

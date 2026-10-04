@@ -13,10 +13,15 @@ export default function SettingsPanel() {
   const [tgSaving, setTgSaving] = useState(false);
   const [tgTest, setTgTest] = useState(null);
 
-  const checkToken = async (token) => {
-    if (!token) { setStatus('unknown'); return; }
+  const checkToken = async () => {
     setStatus('checking');
     try {
+      const res = await fetch('/api/settings/status');
+      const data = await res.json();
+      if (!data.has_upstox_token) {
+        setStatus('unknown');
+        return;
+      }
       const ok = await testConnection();
       setStatus(ok ? 'valid' : 'invalid');
     } catch {
@@ -25,9 +30,18 @@ export default function SettingsPanel() {
   };
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { checkToken(apiToken); }, [apiToken]);
+  useEffect(() => { checkToken(); }, []);
 
-  const handleSaveToken = () => setApiToken(tokenInput);
+  const handleSaveToken = async () => {
+    await fetch('/api/settings/upstox-token', {
+      method: 'POST',
+      body: JSON.stringify({ token: tokenInput }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    setApiToken('saved_in_backend');
+    setTokenInput('');
+    checkToken();
+  };
 
   const handleSaveTelegram = async () => {
     setTgSaving(true);
@@ -71,7 +85,7 @@ export default function SettingsPanel() {
               className="text-xs p-3 rounded"
               style={{ background: 'var(--bg-subtle)', color: 'var(--text-muted)', borderRadius: 'var(--radius)' }}
             >
-              Tokens are stored in your browser's <code>localStorage</code> and expire daily at 6:00 AM IST.
+              Tokens are securely stored in the <strong>backend server</strong> and expire daily at 6:00 AM IST.
               Without a token, no data will be shown.
             </div>
 
@@ -102,9 +116,18 @@ export default function SettingsPanel() {
               <button onClick={handleSaveToken} className="btn btn-primary">
                 Save token
               </button>
-              {apiToken && (
+              {status !== 'unknown' && (
                 <button
-                  onClick={() => { setApiToken(''); setTokenInput(''); setStatus('unknown'); }}
+                  onClick={async () => { 
+                    await fetch('/api/settings/upstox-token', {
+                      method: 'POST',
+                      body: JSON.stringify({ token: '' }),
+                      headers: { 'Content-Type': 'application/json' }
+                    });
+                    setApiToken(''); 
+                    setTokenInput(''); 
+                    checkToken(); 
+                  }}
                   className="btn btn-secondary"
                   style={{ color: 'var(--down)' }}
                 >
@@ -116,73 +139,8 @@ export default function SettingsPanel() {
         </div>
 
         {/* ── Telegram Alerts ────────────────────────────────────────────────── */}
-        <div className="card">
-          <div className="card-header">
-            <div className="flex items-center gap-2">
-              <Send size={15} style={{ color: 'var(--accent)' }} />
-              <span className="card-title">Telegram Alerts</span>
-            </div>
-            {telegramBotToken && telegramChatId && (
-              <span className="text-xs font-medium" style={{ color: 'var(--up)' }}>Configured</span>
-            )}
-          </div>
-          <div className="p-4 flex flex-col gap-4">
-            <div
-              className="text-xs p-3 rounded leading-relaxed"
-              style={{ background: 'var(--bg-subtle)', color: 'var(--text-muted)', borderRadius: 'var(--radius)' }}
-            >
-              <strong style={{ color: 'var(--text)' }}>Setup:</strong>{' '}
-              1. Message <code>@BotFather</code> on Telegram → <code>/newbot</code> → copy Bot Token.{' '}
-              2. Message <code>@userinfobot</code> to get your Chat ID.{' '}
-              3. Paste both below.{' '}
-              <br />
-              <strong style={{ color: 'var(--down)' }}>Note:</strong>{' '}
-              Alerts currently send directly from your browser. Keep this tab open for alerts to fire.
-            </div>
+        {/* Temporarily hidden as per Phase 5 requirements (server-side alerting not fully implemented) */}
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Bot Token</label>
-                <input
-                  type="password"
-                  className="input"
-                  value={tgBotToken}
-                  onChange={e => setTgBotToken(e.target.value)}
-                  placeholder="123456:ABCdef…"
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Chat ID</label>
-                <input
-                  type="text"
-                  className="input"
-                  value={tgChatId}
-                  onChange={e => setTgChatId(e.target.value)}
-                  placeholder="123456789"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={handleSaveTelegram}
-              disabled={tgSaving || !tgBotToken || !tgChatId}
-              className="btn btn-primary"
-            >
-              {tgSaving ? 'Saving & testing…' : 'Save & send test message'}
-            </button>
-
-            {tgTest === 'success' && (
-              <div className="flex items-center gap-2 text-sm p-2 rounded" style={{ background: 'var(--up-bg)', color: 'var(--up)', borderRadius: 'var(--radius)' }}>
-                <CheckCircle2 size={14} /> Test message sent — check Telegram.
-              </div>
-            )}
-            {tgTest === 'fail' && (
-              <div className="flex items-center gap-2 text-sm p-2 rounded" style={{ background: 'var(--down-bg)', color: 'var(--down)', borderRadius: 'var(--radius)' }}>
-                <Shield size={14} /> Failed. Double-check your Bot Token and Chat ID.
-              </div>
-            )}
-          </div>
-        </div>
 
         {/* ── System Info ────────────────────────────────────────────────────── */}
         <div className="card">

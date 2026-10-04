@@ -46,6 +46,15 @@ PIPELINE_INSTANCE = None
 NLP_CACHE = {}
 NLP_CACHE_FILE = STATIC_DIR / "nlp_cache.json"
 
+import requests
+
+UPSTOX_TOKEN = ""
+try:
+    with open(STATIC_DIR / ".upstox_token", "r") as f:
+        UPSTOX_TOKEN = f.read().strip()
+except:
+    pass
+
 APP_STATE = {
     "status": "AWAITING START COMMAND",
     "logs": [],
@@ -140,9 +149,12 @@ def init_global_caches():
     if not dfs:
         print("CRITICAL: No matching CSV datasets found in Desktop/Quant/")
         # Fallback fake data if missing
-        from main import generate_synthetic_headlines
-        df = generate_synthetic_headlines(n=1000)
-        df['timestamp'] = [pd.Timestamp.now() - timedelta(days=1)] * 1000
+        import random
+        from datetime import timedelta
+        print("Using inline synthetic data fallback...")
+        synth_dates = [pd.Timestamp.now() - timedelta(days=i) for i in range(1000)]
+        synth_headlines = [f"Reliance Industries reports Q{random.randint(1,4)} profit growth of {random.randint(10,30)}%" for _ in range(1000)]
+        df = pd.DataFrame({'headline': synth_headlines, 'timestamp': synth_dates})
         dfs.append(df)
 
     master_df = pd.concat(dfs, ignore_index=True)
@@ -1412,9 +1424,98 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
+            
+        if url.path == "/api/settings/upstox-token":
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            try:
+                payload = json.loads(post_data)
+                global UPSTOX_TOKEN
+                token = payload.get("token", "")
+                UPSTOX_TOKEN = token
+                # Save to file
+                with open(STATIC_DIR / ".upstox_token", "w") as f:
+                    f.write(token)
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"status": "ok"}')
+            except Exception as e:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+            return
 
     def do_GET(self):
         url = urlparse(self.path)
+
+        if url.path == "/api/sentiment/summary":
+            with state_lock:
+                ds = SIMULATION_PARAMS.get("daily_sentiment", {})
+            import datetime
+            if ds:
+                dates = sorted(list(ds.keys()))
+                last_date = datetime.datetime.strptime(dates[-1], "%Y-%m-%d").date()
+            else:
+                last_date = datetime.date.today()
+                
+            summary = {}
+            from news_trading_pipeline import TICKER_ALIASES
+            all_tix = list(set([k for k in TICKER_ALIASES.values() if not k.startswith("__")]))
+            for base_ticker in all_tix:
+                ticker = base_ticker + ".NS"
+                scores_7d = []
+                scores_30d = []
+                for d_str, day_data in ds.items():
+                    d = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
+                    days_diff = (last_date - d).days
+                    if days_diff <= 30 and ticker in day_data:
+                        scores_30d.extend(day_data[ticker])
+                        if days_diff <= 7:
+                            scores_7d.extend(day_data[ticker])
+                            
+                s7 = np.mean(scores_7d) if scores_7d else 0.0
+                s30 = np.mean(scores_30d) if scores_30d else 0.0
+                summary[base_ticker] = {
+                    "score_7d": round(float(s7), 3),
+                    "score_30d": round(float(s30), 3),
+                    "n_articles_7d": len(scores_7d),
+                    "change_vs_30d": round(float(s7 - s30), 3),
+                    "as_of": str(last_date)
+                }
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(summary).encode())
+            return
+
+        if url.path.startswith("/api/sentiment/"):
+            # extract symbol
+            parts = url.path.split("/")
+            if len(parts) >= 4:
+                symbol = parts[3]
+                ticker = symbol + ".NS"
+                with state_lock:
+                    ds = SIMULATION_PARAMS.get("daily_sentiment", {})
+                
+                daily_series = []
+                import datetime
+                if ds:
+                    dates = sorted(list(ds.keys()))
+                    last_date = datetime.datetime.strptime(dates[-1], "%Y-%m-%d").date()
+                    for d_str, day_data in ds.items():
+                        d = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
+                        if (last_date - d).days <= 30 and ticker in day_data:
+                            daily_series.append({
+                                "date": d_str,
+                                "sentiment": round(float(np.mean(day_data[ticker])), 3),
+                                "count": len(day_data[ticker])
+                            })
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"symbol": symbol, "series": daily_series}).encode())
+                return
 
         if url.path == "/api/transcript-signals":
             sig_path = Path(__file__).parent / "data" / "transcript_signals.json"
@@ -1540,6 +1641,46 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
             self.send_header('Content-length', str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+            return
+            
+        elif url.path == "/api/settings/status":
+            payload = json.dumps({"has_upstox_token": bool(UPSTOX_TOKEN)}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Content-length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+            
+        elif url.path.startswith("/upstox-api/"):
+            if not UPSTOX_TOKEN:
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b'{"error": "Missing Upstox Token. Please configure it in Settings."}')
+                return
+                
+            target_url = "https://api.upstox.com" + url.path.replace("/upstox-api", "")
+            if url.query:
+                target_url += "?" + url.query
+                
+            headers = {
+                'Authorization': f'Bearer {UPSTOX_TOKEN}',
+                'Accept': 'application/json',
+                'Api-Version': '2.0'
+            }
+            try:
+                resp = requests.get(target_url, headers=headers)
+                self.send_response(resp.status_code)
+                for k, v in resp.headers.items():
+                    # Forward safe headers, ignore encoding/cors since we handle it
+                    if k.lower() not in ['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'access-control-allow-origin']:
+                        self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(resp.content)
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
             return
             
         elif url.path == "/" or url.path == "":

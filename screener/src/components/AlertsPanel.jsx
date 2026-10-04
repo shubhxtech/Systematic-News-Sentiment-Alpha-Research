@@ -101,17 +101,8 @@ export default function AlertsPanel() {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-[var(--text)] tracking-tight">Alerts Engine</h1>
-          <p className="text-muted text-sm mt-1">Set conditions. Get instant browser + Telegram notifications.</p>
+          <p className="text-muted text-sm mt-1">Set conditions and get instant browser notifications.</p>
         </div>
-        {tgConfigured ? (
-          <div className="ml-auto flex items-center gap-2 text-xs bg-[var(--up-bg)] text-[var(--up)] px-3 py-1.5 rounded">
-            <Send size={12} /> Telegram Connected
-          </div>
-        ) : (
-          <div className="ml-auto flex items-center gap-2 text-xs bg-[var(--bg-subtle)] text-muted px-3 py-1.5 rounded border border-[var(--border)]">
-            <Send size={12} /> Telegram not configured (go to Settings)
-          </div>
-        )}
       </div>
 
       {/* Create Alert */}

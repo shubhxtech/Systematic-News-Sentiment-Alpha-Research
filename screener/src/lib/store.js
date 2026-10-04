@@ -24,6 +24,14 @@ export const useStore = create((set, get) => ({
   },
 
   // ── UI ────────────────────────────────────────────────────────────────────
+  theme: localStorage.getItem('sc_theme') || 'light',
+  toggleTheme: () => set(s => {
+    const next = s.theme === 'light' ? 'dark' : 'light';
+    localStorage.setItem('sc_theme', next);
+    if (next === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    return { theme: next };
+  }),
   activeTab: 'screener',
   setActiveTab: (tab) => set({ activeTab: tab }),
   selectedTicker: null,

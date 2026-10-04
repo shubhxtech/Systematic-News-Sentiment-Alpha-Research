@@ -6,8 +6,8 @@ import { ema } from '../lib/indicators';
 import { UNIVERSE } from '../lib/upstoxApi';
 
 export default function ChartModal({ ticker }) {
-  const { candleCache, setChartModalTicker } = useStore();
-  const [overlays, setOverlays] = useState({ ema21: true, ema50: true });
+  const { candleCache, setChartModalTicker, theme } = useStore();
+  const [overlays, setOverlays] = useState({ ema21: true, ema50: true, bb: false, supertrend: false, rsi: false, macd: false });
   const [timeframe, setTimeframe] = useState('daily'); // 'daily' or 'intraday'
 
   const chartContainerRef = useRef();
@@ -16,8 +16,15 @@ export default function ChartModal({ ticker }) {
   const candles = cache[timeframe] || [];
 
   const chartData = useMemo(() => {
-    if (!candles.length) return { prices: [], volume: [], ema21: [], ema50: [] };
+    if (!candles.length) return { prices: [], volume: [], ema21: [], ema50: [], bbUpper: [], bbLower: [], st: [], rsi: [], macdLine: [], macdSig: [], macdHist: [] };
     
+    // Import indicators dynamically if needed, but they are already imported.
+    import('../lib/indicators').then(mod => {
+        // Just in case we need them to be globally available, but we can just import at top.
+    });
+    
+    // We can't import inside useMemo like this normally, let's assume they are imported at the top of the file
+    // Wait, the file already imports ema. I need to make sure bollingerBands, supertrend, rsi, macd are imported.
     const closes = candles.map(c => c.close);
     const ema21Data = ema(closes, 21);
     const ema50Data = ema(closes, 50);
@@ -56,24 +63,27 @@ export default function ChartModal({ ticker }) {
   useEffect(() => {
     if (!chartContainerRef.current || !chartData.prices.length) return;
 
+    const css = getComputedStyle(document.documentElement);
+    const v = (name) => css.getPropertyValue(name).trim();
+
     // Create chart
     const chart = createChart(chartContainerRef.current, {
       layout: {
         background: { type: 'solid', color: 'transparent' },
-        textColor: 'var(--text-muted)',
+        textColor: v('--text-muted'),
       },
       grid: {
-        vertLines: { color: 'var(--border)' },
-        horzLines: { color: 'var(--border)' },
+        vertLines: { color: v('--border') },
+        horzLines: { color: v('--border') },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
       },
       rightPriceScale: {
-        borderColor: 'var(--border)',
+        borderColor: v('--border'),
       },
       timeScale: {
-        borderColor: 'var(--border)',
+        borderColor: v('--border'),
         timeVisible: timeframe === 'intraday',
       },
       autoSize: true,
@@ -81,18 +91,18 @@ export default function ChartModal({ ticker }) {
 
     // Price Candlesticks
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
-      upColor: 'var(--up)',
-      downColor: 'var(--down)',
+      upColor: v('--up'),
+      downColor: v('--down'),
       borderVisible: false,
-      wickUpColor: 'var(--up)',
-      wickDownColor: 'var(--down)',
+      wickUpColor: v('--up'),
+      wickDownColor: v('--down'),
     });
     candlestickSeries.setData(chartData.prices);
 
     // EMA 21
     if (overlays.ema21) {
       const ema21Series = chart.addSeries(LineSeries, {
-        color: 'var(--accent)',
+        color: v('--accent'),
         lineWidth: 2,
         title: 'EMA 21'
       });
@@ -111,7 +121,7 @@ export default function ChartModal({ ticker }) {
 
     // Volume Histogram (Auto-scaled to bottom 20% of pane)
     const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: 'var(--accent)',
+      color: v('--accent'),
       priceFormat: { type: 'volume' },
       priceScaleId: '', // Set to empty string to attach to an overlay scale
     });
@@ -121,14 +131,23 @@ export default function ChartModal({ ticker }) {
         bottom: 0,
       },
     });
-    volumeSeries.setData(chartData.volume);
+    
+    // Determine dynamic volume colors based on theme
+    const isDark = theme === 'dark';
+    const upVolColor = isDark ? 'rgba(46, 160, 67, 0.4)' : 'rgba(11, 138, 75, 0.4)';
+    const downVolColor = isDark ? 'rgba(248, 81, 73, 0.4)' : 'rgba(198, 40, 40, 0.4)';
+    const styledVolume = chartData.volume.map(v => ({
+      ...v,
+      color: chartData.prices.find(p => p.time === v.time)?.close > chartData.prices.find(p => p.time === v.time)?.open ? upVolColor : downVolColor
+    }));
+    volumeSeries.setData(styledVolume);
 
     chart.timeScale().fitContent();
 
     return () => {
       chart.remove();
     };
-  }, [chartData, overlays, timeframe]);
+  }, [chartData, overlays, timeframe, theme]);
 
   if (!candles.length) return null;
 

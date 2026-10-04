@@ -7,9 +7,8 @@ export default defineConfig({
     port: 5175,
     proxy: {
       '/upstox-api': {
-        target: 'https://api.upstox.com',
+        target: 'http://localhost:8766',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/upstox-api/, ''),
       },
       '/nlp-api': {
         target: 'http://localhost:8766',

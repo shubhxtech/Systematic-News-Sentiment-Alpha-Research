@@ -45,6 +45,31 @@ export function useScreenerData() {
       const quotes = await getMarketQuotes();
       const keys   = Object.keys(quotes);
 
+      // 1. Fetch sentiment and fundamentals if missing
+      let nlpData = nlpSentiments;
+      if (!Object.keys(nlpData).length) {
+        try {
+          const res = await fetch('/api/sentiment/summary');
+          if (res.ok) {
+            nlpData = await res.json();
+            setNLPSentiments(nlpData);
+          }
+        } catch (e) {
+          console.error("Failed to fetch NLP sentiment", e);
+        }
+      }
+
+      let fundData = {};
+      try {
+        const res = await fetch('/api/fundamentals');
+        if (res.ok) {
+          const parsed = await res.json();
+          fundData = parsed.stocks || {};
+        }
+      } catch (e) {
+        console.error("Failed to fetch fundamentals", e);
+      }
+
       setScreenerData(prevData => {
         const data = { ...prevData };
         for (const k of keys) {
@@ -59,13 +84,16 @@ export function useScreenerData() {
           const avgVol  = candles?.daily?.length
             ? candles.daily.slice(-20).reduce((a, c) => a + c.volume, 0) / 20 || 1
             : null;
-          const nlp = nlpSentiments[ticker] ?? null;
+          
+          // nlpData has keys like 'RELIANCE', ticker is 'RELIANCE'
+          const nlp = nlpData[ticker]?.score_7d ?? null;
+          const fundScore = fundData[ticker + '.NS']?.score ?? null;
 
           // Only compute signals when we have candle history
           let signalData = {};
           if (candles?.daily?.length >= 50) {
             const { score, signal, breakdown, indicators, warning } =
-              computeSignal(candles.daily, { nlpScore: nlp, fundamentalScore: null });
+              computeSignal(candles.daily, { nlpScore: nlp, fundamentalScore: fundScore });
             signalData = {
               signalScore:   score,
               signal:        signal,
@@ -103,7 +131,9 @@ export function useScreenerData() {
             volume:     q.volume,
             avgVolume:  avgVol,
             nlpSentiment: nlp,
-            fundamentalScore: null,    // populated later from /api/fundamentals
+            fundamentalScore: fundScore,
+            fundamentals: fundData[ticker + '.NS'] || null,
+            nlpSummary: nlpData[ticker] || null,
             week52High: q['52_week_high']
               ?? (candles?.daily ? Math.max(...candles.daily.slice(-252).map(c => c.high)) : null),
             week52Low:  q['52_week_low']

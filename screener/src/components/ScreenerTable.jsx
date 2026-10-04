@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
 import { Search, Star, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { SECTORS } from '../lib/upstoxApi';
 import { Delta, RsiCell, RangeBar, signalLabel, signalClass, inr, compactVol, volRatio } from '../lib/format.jsx';
+
+import { filterDataByQuery } from '../lib/query';
 
 const EN_DASH = '–';
 
@@ -11,13 +14,16 @@ const COLUMNS = [
   { key: 'name',        label: 'Name',          sortable: false },
   { key: 'ltp',         label: 'Price (₹)',      sortable: true,  align: 'right' },
   { key: 'changePct',   label: 'Change %',       sortable: true,  align: 'right' },
-  { key: 'volume',      label: 'Volume',         sortable: true,  align: 'right' },
-  { key: 'rsi',         label: 'RSI',            sortable: true,  align: 'right' },
-  { key: '52w',         label: '52w range',      sortable: false, align: 'center' },
+  { key: 'volume',      label: 'Volume',         sortable: true,  align: 'right', hideOnMobile: true },
+  { key: 'rsi',         label: 'RSI',            sortable: true,  align: 'right', hideOnMobile: true },
+  { key: 'nlpSentiment',label: 'Sentiment (7d)', sortable: true,  align: 'right', hideOnMobile: true },
+  { key: 'fundamentalScore', label: 'Fund. Score', sortable: true, align: 'right', hideOnMobile: true },
+  { key: '52w',         label: '52w range',      sortable: false, align: 'center', hideOnMobile: true },
   { key: 'signalScore', label: 'Signal',         sortable: true,  align: 'center' },
 ];
 
 export default function ScreenerTable() {
+  const navigate = useNavigate();
   const {
     screenerData, filters, setFilter,
     selectedTicker, setSelectedTicker,
@@ -29,9 +35,17 @@ export default function ScreenerTable() {
   const dataArr = useMemo(() => Object.values(screenerData), [screenerData]);
 
   const filtered = useMemo(() => {
-    return dataArr
+    let result = dataArr;
+    
+    // 1. Advanced query parsing
+    if (filters.search && filters.search.includes('=')) {
+      result = filterDataByQuery(result, filters.search);
+    } else if (filters.search) {
+      result = result.filter(d => `${d.ticker} ${d.name || ''}`.toLowerCase().includes(filters.search.toLowerCase()));
+    }
+
+    return result
       .filter(d => {
-        if (filters.search && !`${d.ticker} ${d.name || ''}`.toLowerCase().includes(filters.search.toLowerCase())) return false;
         if (filters.sector !== 'All' && d.sector !== filters.sector) return false;
         if (filters.signal !== 'All' && d.signal !== filters.signal) return false;
         if (filters.showWatchlistOnly && !watchlist.includes(d.ticker)) return false;
@@ -108,9 +122,9 @@ export default function ScreenerTable() {
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-faint)' }} />
           <input
             type="text"
-            placeholder="Search ticker or name…"
+            placeholder="Search or query (e.g. RSI < 40)..."
             className="input"
-            style={{ paddingLeft: 28, width: 220 }}
+            style={{ paddingLeft: 28, width: 240 }}
             value={filters.search}
             onChange={e => setFilter('search', e.target.value)}
           />
@@ -161,11 +175,11 @@ export default function ScreenerTable() {
               {COLUMNS.map(c => (
                 <th
                   key={c.key}
-                  className={c.align === 'right' ? 'num' : ''}
+                  className={`${c.align === 'right' ? 'num' : ''} ${c.hideOnMobile ? 'hidden md:table-cell' : ''}`}
                   style={{ textAlign: c.align === 'center' ? 'center' : undefined }}
                   onClick={c.sortable ? () => handleSort(c.key) : undefined}
                 >
-                  <span className="inline-flex items-center gap-1">
+                  <span className={`inline-flex items-center gap-1 ${c.align === 'right' ? 'justify-end w-full' : ''}`}>
                     {c.label}
                     {c.sortable && (
                       filters.sortBy === c.key
@@ -186,7 +200,7 @@ export default function ScreenerTable() {
                 row={row}
                 isSelected={selectedTicker === row.ticker}
                 isWatched={watchlist.includes(row.ticker)}
-                onSelect={() => setSelectedTicker(selectedTicker === row.ticker ? null : row.ticker)}
+                onSelect={() => navigate(`/company/${row.ticker}`)}
                 onToggleWatch={() => toggleWatchlist(row.ticker)}
               />
             ))}
@@ -243,17 +257,35 @@ function TableRow({ row, isSelected, isWatched, onSelect, onToggleWatch }) {
       </td>
 
       {/* Volume */}
-      <td className="num" style={{ color: 'var(--text-muted)' }}>
+      <td className="num hidden md:table-cell" style={{ color: 'var(--text-muted)' }}>
         {compactVol(row.volume)}
       </td>
 
       {/* RSI */}
-      <td className="num">
+      <td className="num hidden md:table-cell">
         <RsiCell value={row.rsi} />
       </td>
 
+      {/* NLP Sentiment */}
+      <td className="num hidden md:table-cell">
+        {row.nlpSentiment != null ? (
+          <span style={{ color: row.nlpSentiment > 0.1 ? 'var(--up)' : row.nlpSentiment < -0.1 ? 'var(--down)' : 'var(--text)' }}>
+            {row.nlpSentiment > 0 ? '+' : ''}{row.nlpSentiment.toFixed(2)}
+          </span>
+        ) : <span style={{ color: 'var(--text-faint)' }}>{EN_DASH}</span>}
+      </td>
+
+      {/* Fundamental Score */}
+      <td className="num hidden md:table-cell">
+        {row.fundamentalScore != null ? (
+          <span style={{ color: row.fundamentalScore >= 60 ? 'var(--up)' : row.fundamentalScore < 40 ? 'var(--down)' : 'var(--text)' }}>
+            {row.fundamentalScore}
+          </span>
+        ) : <span style={{ color: 'var(--text-faint)' }}>{EN_DASH}</span>}
+      </td>
+
       {/* 52w range */}
-      <td style={{ textAlign: 'center' }}>
+      <td className="hidden md:table-cell" style={{ textAlign: 'center' }}>
         <RangeBar low={row.week52Low} high={row.week52High} current={row.ltp} />
       </td>
 

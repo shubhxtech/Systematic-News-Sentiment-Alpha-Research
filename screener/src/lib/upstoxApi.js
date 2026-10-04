@@ -13,10 +13,8 @@ const upstox = axios.create({
 });
 
 upstox.interceptors.request.use(cfg => {
-  const token = localStorage.getItem('upstox_token');
-  if (token) cfg.headers['Authorization'] = `Bearer ${token}`;
   cfg.headers['Accept'] = 'application/json';
-  cfg.headers['Api-Version'] = '2.0';
+  // Api-Version and Authorization are added by the Python proxy
   return cfg;
 });
 
