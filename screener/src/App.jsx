@@ -1,7 +1,6 @@
-import { useEffect } from 'react';
 import { useStore } from './lib/store';
 import { useScreenerData } from './hooks/useScreenerData';
-import { LineChart, LayoutGrid, BellRing, Star, RefreshCw, AlertCircle, Settings } from 'lucide-react';
+import { LineChart, LayoutGrid, BellRing, Star, RefreshCw, AlertCircle, Settings, KeyRound } from 'lucide-react';
 import ScreenerTable from './components/ScreenerTable';
 import StockDetailPanel from './components/StockDetailPanel';
 import SettingsPanel from './components/SettingsPanel';
@@ -15,14 +14,29 @@ export default function App() {
   const {
     activeTab, setActiveTab, selectedTicker,
     apiToken, loading, error, chartModalTicker,
-    lastUpdated, marketOpen, watchlist,
+    lastUpdated, marketOpen, watchlist, needsApiToken,
   } = useStore();
   const { pollOnce } = useScreenerData();
 
-  const isDemo = !apiToken;
-
   return (
     <div className="min-h-screen flex flex-col">
+      {/* ── No-Token Banner ────────────────────────────────────────────────── */}
+      {needsApiToken && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-6 py-2.5 flex items-center gap-3">
+          <KeyRound size={15} className="text-amber-400 shrink-0" />
+          <p className="text-xs text-amber-300 flex-1">
+            <strong>No Upstox API token configured.</strong>{' '}
+            Real-time market data and charts require a valid token. No demo or random data will be shown.
+          </p>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className="text-xs font-semibold text-amber-400 hover:text-amber-200 underline shrink-0"
+          >
+            Configure in Settings →
+          </button>
+        </div>
+      )}
+
       {/* ── Navbar ─────────────────────────────────────────────────────────── */}
       <nav className="h-14 border-b border-white/[0.05] bg-[#080d18] flex items-center justify-between px-6 shrink-0">
         <div className="flex items-center gap-6">
@@ -31,7 +45,7 @@ export default function App() {
               <LineChart size={14} className="text-white" />
             </div>
             <span className="font-semibold text-slate-100 tracking-tight">
-              India Quant Screener <span className="text-blue-500 font-mono text-[10px] ml-1">v2.0</span>
+              India Screener
             </span>
           </div>
 
@@ -50,22 +64,25 @@ export default function App() {
 
         <div className="flex items-center gap-4">
           {error && <div className="text-xs text-red-400 flex items-center gap-1"><AlertCircle size={14}/> Error</div>}
-          {lastUpdated && !loading.screener && (
-            <div className="text-[10px] text-slate-600 font-mono hidden md:block">Updated {lastUpdated}</div>
+          {lastUpdated && !loading.screener && apiToken && (
+            <div className="text-xs text-slate-500 hidden md:block">Updated {lastUpdated}</div>
           )}
           {marketOpen && (
-            <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 font-semibold">
+            <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               MARKET OPEN
             </div>
           )}
-          <div className={`px-2 py-1 rounded text-[10px] font-mono border ${isDemo ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
-            {isDemo ? 'DEMO MODE' : 'LIVE API'}
-          </div>
+          {apiToken && (
+            <div className="px-2 py-1 rounded text-xs border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+              LIVE
+            </div>
+          )}
           <button
             onClick={pollOnce}
-            className={`text-slate-400 hover:text-white transition-colors ${loading.screener ? 'animate-spin' : ''}`}
-            title="Refresh now"
+            disabled={!apiToken}
+            className={`text-slate-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${loading.screener ? 'animate-spin' : ''}`}
+            title={apiToken ? 'Refresh now' : 'Add API token to refresh'}
           >
             <RefreshCw size={16} />
           </button>
@@ -82,12 +99,12 @@ export default function App() {
       <main className="flex-1 overflow-hidden relative">
         {activeTab === 'screener' && (
           <div className="absolute inset-0 flex">
-            <div className={`flex-1 overflow-auto border-r border-white/[0.05] transition-all duration-300`}>
+            <div className="flex-1 overflow-auto border-r border-white/[0.05]">
               <MarketBreadth />
               <ScreenerTable />
             </div>
             {selectedTicker && (
-              <div className="w-[420px] bg-[#0a111f] border-l border-white/[0.05] overflow-auto flex-shrink-0 shadow-2xl">
+              <div className="w-[420px] bg-[#0a111f] border-l border-white/[0.05] overflow-auto flex-shrink-0">
                 <StockDetailPanel ticker={selectedTicker} />
               </div>
             )}

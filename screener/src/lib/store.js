@@ -37,6 +37,10 @@ export const useStore = create((set, get) => ({
   error: null,
   setError: (e) => set({ error: e }),
 
+  // Whether the app is waiting for an API token to be configured
+  needsApiToken: !localStorage.getItem('upstox_token'),
+  setNeedsApiToken: (v) => set({ needsApiToken: v }),
+
   // ── Market ────────────────────────────────────────────────────────────────
   marketOpen: false,
   setMarketOpen: (v) => set({ marketOpen: v }),
