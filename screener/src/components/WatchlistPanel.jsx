@@ -3,7 +3,8 @@ import { useStore } from '../lib/store';
 import { useScreenerData } from '../hooks/useScreenerData';
 import {
   Star, Plus, Trash2, TrendingUp, TrendingDown, AlertTriangle,
-  CheckCircle2, XCircle, Clock, Loader2, ChevronRight, Bell
+  CheckCircle2, XCircle, Clock, Loader2, ChevronRight, Bell,
+  Maximize2, ExternalLink, X
 } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, XAxis, YAxis,
@@ -119,6 +120,7 @@ export default function WatchlistPanel() {
     screenerData, candleCache,
     telegramBotToken, telegramChatId,
     alerts, addAlert,
+    setChartModalTicker,
   } = useStore();
   const { fetchWatchlistTicker } = useScreenerData();
 
@@ -187,7 +189,16 @@ export default function WatchlistPanel() {
           <div className="flex items-center gap-2 mb-4">
             <Star size={18} className="text-amber-400 fill-amber-400" />
             <h2 className="font-bold text-white text-lg">Watchlist</h2>
-            <span className="ml-auto text-xs text-slate-500 font-mono">{watchlist.length} stocks</span>
+            <span className="text-xs text-slate-500 font-mono ml-auto">{watchlist.length} stocks</span>
+            {watchlist.length > 0 && (
+              <button
+                onClick={() => { if (window.confirm('Clear all watchlist stocks?')) { watchlist.forEach(t => removeFromWatchlist(t)); setSelected(null); } }}
+                className="text-[10px] text-slate-600 hover:text-red-400 transition-colors"
+                title="Clear all"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
 
           {/* Add ticker input */}
@@ -197,7 +208,7 @@ export default function WatchlistPanel() {
               value={input}
               onChange={e => { setInput(e.target.value.toUpperCase()); setAddError(''); }}
               onKeyDown={e => e.key === 'Enter' && handleAdd()}
-              placeholder="Add NSE ticker..."
+              placeholder="NSE ticker, e.g. RELIANCE"
               className="input-field flex-1 font-mono text-sm"
             />
             <button
@@ -209,6 +220,14 @@ export default function WatchlistPanel() {
             </button>
           </div>
           {addError && <p className="text-red-400 text-xs mt-1">{addError}</p>}
+          <a
+            href="https://www.nseindia.com/market-data/securities-available-for-trading"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-[10px] text-blue-500/70 hover:text-blue-400 transition-colors mt-1"
+          >
+            <ExternalLink size={10} /> Find NSE symbols on nseindia.com
+          </a>
         </div>
 
         {/* Watchlist items */}
@@ -296,12 +315,20 @@ export default function WatchlistPanel() {
                   </div>
                 )}
               </div>
-              <button
-                onClick={handleSetAlert}
-                className="flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl text-sm font-semibold hover:bg-amber-500/20 transition-colors"
-              >
-                <Bell size={16} /> Set BUY Alert
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setChartModalTicker(selected)}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600/10 border border-blue-500/20 text-blue-400 rounded-xl text-sm font-semibold hover:bg-blue-600/20 transition-colors"
+                >
+                  <Maximize2 size={16} /> Full Chart
+                </button>
+                <button
+                  onClick={handleSetAlert}
+                  className="flex items-center gap-2 px-4 py-2 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-xl text-sm font-semibold hover:bg-amber-500/20 transition-colors"
+                >
+                  <Bell size={16} /> Set BUY Alert
+                </button>
+              </div>
             </div>
 
             {/* Chart */}
