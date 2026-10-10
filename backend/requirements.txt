@@ -9,14 +9,5 @@ scipy>=1.11
 # HTTP / networking
 requests>=2.31
 
-# Machine learning
-scikit-learn>=1.4
-shap>=0.45
-hmmlearn>=0.3
-
-# Deep learning & NLP (for FinBERT sentiment)
-torch>=2.2
-transformers>=4.40
-
 # Market data
 yfinance>=0.2.38

@@ -155,6 +155,15 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'{}')
             return
 
+        if url.path == "/api/settings/status":
+            payload = json.dumps({"has_upstox_token": bool(state.UPSTOX_TOKEN)}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Content-length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if url.path == "/api/live-state":
             with state.state_lock:
                 data = copy.deepcopy(state.APP_STATE)
