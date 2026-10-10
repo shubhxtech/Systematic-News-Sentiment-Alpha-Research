@@ -1,2 +1,10 @@
 node_modules/
+dist/
+__pycache__/
+*.pyc
+*.pyo
 .upstox_token
+nlp_cache.json
+.DS_Store
+*.db
+.logs/
