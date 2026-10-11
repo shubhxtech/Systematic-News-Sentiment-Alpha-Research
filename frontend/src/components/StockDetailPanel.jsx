@@ -25,12 +25,6 @@ export default function StockDetailPanel({ ticker }) {
     { label: 'MACD is Bullish', passed: macdHistogram > 0 },
   ];
 
-  // NLP Label
-  let nlpLabel = 'Neutral';
-  let nlpColor = 'var(--text-muted)';
-  if (data.nlpSentiment > 0.2) { nlpLabel = 'Positive'; nlpColor = 'var(--up)'; }
-  else if (data.nlpSentiment < -0.2) { nlpLabel = 'Negative'; nlpColor = 'var(--down)'; }
-
   // P&L Logic
   const position = portfolio[ticker];
   const [isEditingPnl, setIsEditingPnl] = useState(!position);
@@ -207,43 +201,6 @@ export default function StockDetailPanel({ ticker }) {
           </div>
         </div>
 
-        {/* ── NLP Sentiment ──────────────────────────────────────────────── */}
-        <div className="card">
-          <div className="card-header">
-            <span className="card-title flex items-center gap-2">
-              <BookOpen size={14} style={{ color: 'var(--text-faint)' }} /> 
-              News Sentiment (FinBERT)
-            </span>
-          </div>
-          <div className="p-4 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted">7-Day Score ({data.nlpSummary?.n_articles_7d || 0} articles)</span>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold" style={{ color: nlpColor }}>
-                  {nlpLabel}
-                </span>
-                <span className="text-xs font-mono text-muted bg-[var(--bg-subtle)] px-2 py-0.5 rounded">
-                  {data.nlpSentiment != null ? (data.nlpSentiment > 0 ? '+' : '') + data.nlpSentiment.toFixed(2) : 'N/A'}
-                </span>
-              </div>
-            </div>
-            
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-muted">30-Day Score</span>
-              <span className="text-xs font-mono" style={{ color: 'var(--text)' }}>
-                {data.nlpSummary?.score_30d != null ? (data.nlpSummary.score_30d > 0 ? '+' : '') + data.nlpSummary.score_30d.toFixed(2) : 'N/A'}
-              </span>
-            </div>
-            
-            <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 mt-1">
-              <span className="text-xs text-muted">Change vs 30D</span>
-              <span className="text-xs font-mono font-medium" style={{ color: data.nlpSummary?.change_vs_30d > 0 ? 'var(--up)' : data.nlpSummary?.change_vs_30d < 0 ? 'var(--down)' : 'var(--text)' }}>
-                {data.nlpSummary?.change_vs_30d != null ? (data.nlpSummary.change_vs_30d > 0 ? '▲ +' : '▼ ') + data.nlpSummary.change_vs_30d.toFixed(2) : 'N/A'}
-              </span>
-            </div>
-          </div>
-        </div>
-        
         {/* ── Recent News ────────────────────────────────────────────────── */}
         <div className="card">
           <div className="card-header">

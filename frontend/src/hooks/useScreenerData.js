@@ -5,15 +5,15 @@
  * If no API token is configured, sets needsApiToken=true and stops.
  * No synthetic / random data is ever generated.
  */
-import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useStore } from '../lib/store';
 import {
   TICKERS, UNIVERSE,
-  getMarketQuotes, getHistoricalCandles, testConnection,
+  getMarketQuotes, getHistoricalCandles,
 } from '../lib/upstoxApi';
 import { computeSignal } from '../lib/signal';
 import {
-  isMarketOpen, isPreOpen, getMarketStatus, getPollInterval, shouldSkipLiveQuotes, timeUntilOpen,
+  isMarketOpen, getMarketStatus, getPollInterval, shouldSkipLiveQuotes, timeUntilOpen,
 } from '../lib/marketHours';
 
 // ── Hook ───────────────────────────────────────────────────────────────────
@@ -28,10 +28,7 @@ export function useScreenerData() {
     setLastUpdated,
     setLoading,
     setNeedsApiToken,
-    nlpSentiments,
-    setNLPSentiments,  // Fix: was called but never destructured → silent TypeError
     watchlist,
-    screenerData,
   } = useStore();
 
   // ── Main screener poll (live data only) ────────────────────────────────────
@@ -54,15 +51,6 @@ export function useScreenerData() {
         setLoading('screener', true);
       }
 
-      // Still fetch NLP / fundamentals if we don't have them yet
-      let nlpData = nlpSentiments;
-      if (!Object.keys(nlpData).length) {
-        try {
-          const res = await fetch('/api/sentiment/summary');
-          if (res.ok) { nlpData = await res.json(); setNLPSentiments(nlpData); }
-        } catch (e) { console.warn('NLP fetch failed', e); }
-      }
-
       try {
         const res = await fetch('/api/fundamentals');
         if (res.ok) {
@@ -73,18 +61,15 @@ export function useScreenerData() {
           for (const [ticker, prev] of Object.entries(screenerData)) {
             const candles = candleCache[ticker];
             if (!candles?.daily?.length || candles.daily.length < 50) continue;
-            const nlp = nlpData[ticker]?.score_7d ?? null;
             const fundScore = fundData[ticker + '.NS']?.score ?? null;
             const { score, signal, breakdown, indicators, warning } =
-              computeSignal(candles.daily, { nlpScore: nlp, fundamentalScore: fundScore });
+              computeSignal(candles.daily, { fundamentalScore: fundScore });
             updateTicker(ticker, {
               signalScore: score, signal, breakdown,
               signalWarning: warning,
               rsi: indicators?.rsiVal,
               fundamentalScore: fundScore,
               fundamentals: fundData[ticker + '.NS'] || prev.fundamentals || null,
-              nlpSentiment: nlp,
-              nlpSummary: nlpData[ticker] || prev.nlpSummary || null,
             });
           }
         }
@@ -101,20 +86,6 @@ export function useScreenerData() {
     try {
       const quotes = await getMarketQuotes();
       const keys   = Object.keys(quotes);
-
-      // 1. Fetch sentiment and fundamentals if missing
-      let nlpData = nlpSentiments;
-      if (!Object.keys(nlpData).length) {
-        try {
-          const res = await fetch('/api/sentiment/summary');
-          if (res.ok) {
-            nlpData = await res.json();
-            setNLPSentiments(nlpData);
-          }
-        } catch (e) {
-          console.error("Failed to fetch NLP sentiment", e);
-        }
-      }
 
       let fundData = {};
       try {
@@ -142,15 +113,13 @@ export function useScreenerData() {
             ? candles.daily.slice(-20).reduce((a, c) => a + c.volume, 0) / 20 || 1
             : null;
           
-          // nlpData has keys like 'RELIANCE', ticker is 'RELIANCE'
-          const nlp = nlpData[ticker]?.score_7d ?? null;
           const fundScore = fundData[ticker + '.NS']?.score ?? null;
 
           // Only compute signals when we have candle history
           let signalData = {};
           if (candles?.daily?.length >= 50) {
             const { score, signal, breakdown, indicators, warning } =
-              computeSignal(candles.daily, { nlpScore: nlp, fundamentalScore: fundScore });
+              computeSignal(candles.daily, { fundamentalScore: fundScore });
             signalData = {
               signalScore:   score,
               signal:        signal,
@@ -182,10 +151,8 @@ export function useScreenerData() {
                   / (q.prev_close_price || q.ohlc?.close)) * 100,
             volume:     q.volume,
             avgVolume:  avgVol,
-            nlpSentiment: nlp,
             fundamentalScore: fundScore,
             fundamentals: fundData[ticker + '.NS'] || null,
-            nlpSummary: nlpData[ticker] || null,
             week52High: q['52_week_high']
               ?? (candles?.daily ? Math.max(...candles.daily.slice(-252).map(c => c.high)) : null),
             week52Low:  q['52_week_low']
@@ -196,7 +163,6 @@ export function useScreenerData() {
       });
 
       // Background history fetch — only run when market open (data will be fresh)
-      // Skip if market just closed (candles won't have changed since yesterday)
       if (!window.__isFetchingHistory && isMarketOpen()) {
         window.__isFetchingHistory = true;
         (async () => {
@@ -213,9 +179,8 @@ export function useScreenerData() {
                 setCandleCache(ticker, result);
                 // Recompute signal now that we have candles
                 if (result.daily.length >= 50) {
-                  const nlp = nlpSentiments[ticker] ?? null;
                   const { score, signal, breakdown, indicators, warning } =
-                    computeSignal(result.daily, { nlpScore: nlp, fundamentalScore: null });
+                    computeSignal(result.daily, { fundamentalScore: null });
                   updateTicker(ticker, {
                     signalScore:   score,
                     signal,
@@ -233,7 +198,7 @@ export function useScreenerData() {
                   });
                 }
               }
-              await new Promise(r => setTimeout(r, 1500));
+              await new Promise(r => setTimeout(r, 1200));
             }
           } finally {
             window.__isFetchingHistory = false;
@@ -247,7 +212,7 @@ export function useScreenerData() {
     } finally {
       setLoading('screener', false);
     }
-  }, [apiToken, nlpSentiments, setNLPSentiments, candleCache, setCandleCache, setLastUpdated, setLoading, setMarketOpen, setNeedsApiToken, setScreenerData, updateTicker]);
+  }, [apiToken, candleCache, setCandleCache, setLastUpdated, setLoading, setMarketOpen, setNeedsApiToken, setScreenerData, updateTicker]);
 
   // ── Watchlist ticker fetch (live only, no random fallback) ─────────────────
   const fetchWatchlistTicker = useCallback(async (ticker, force = false) => {
@@ -264,9 +229,8 @@ export function useScreenerData() {
 
       if (candles.daily.length >= 50) {
         setCandleCache(ticker, candles);
-        const nlp = nlpSentiments[ticker] ?? null;
         const { score, signal, breakdown, indicators, warning } =
-          computeSignal(candles.daily, { nlpScore: nlp, fundamentalScore: null });
+          computeSignal(candles.daily, { fundamentalScore: null });
         const last = candles.daily[candles.daily.length - 1];
         const prev = candles.daily[candles.daily.length - 2];
         const changePct = prev ? ((last.close - prev.close) / prev.close) * 100 : null;
@@ -304,7 +268,7 @@ export function useScreenerData() {
     } finally {
       setLoading('candles', false);
     }
-  }, [apiToken, candleCache, nlpSentiments, setCandleCache, setLoading, setNeedsApiToken, updateTicker]);
+  }, [apiToken, candleCache, setCandleCache, setLoading, setNeedsApiToken, updateTicker]);
 
   // ── Poll loop — interval adapts to market hours ────────────────────────────
   useEffect(() => {
