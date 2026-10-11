@@ -1,16 +1,23 @@
 import json
 import copy
 import datetime
+import email.utils
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import timezone
+import logging
 import pandas as pd
 import numpy as np
 import os
 import requests
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
+
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
 
 import state
 from data_manager import TICKER_ALIASES
@@ -25,8 +32,7 @@ class JSONEncoderExt(json.JSONEncoder):
 class LiveAPIHandler(BaseHTTPRequestHandler):
     def end_headers(self):
         origin = self.headers.get("Origin")
-        allowed_origins = ["http://localhost:5175", "http://127.0.0.1:5175"]
-        if origin in allowed_origins:
+        if origin and ("localhost" in origin or "127.0.0.1" in origin):
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Access-Control-Allow-Credentials', 'true')
         super().end_headers()
@@ -178,100 +184,151 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
             return
             
         if url.path == "/api/news":
-            query_dict = dict(q.split("=") for q in url.query.split("&") if "=" in q) if url.query else {}
-            query = query_dict.get("q", "Indian Stock Market")
-            ticker = query_dict.get("ticker", "")
-            import yfinance as yf
-            
+            parsed_query = urllib.parse.parse_qs(url.query) if url.query else {}
+            query = parsed_query.get("q", ["Indian Stock Market"])[0].strip()
+            ticker = parsed_query.get("ticker", [""])[0].strip()
+
             articles = []
             now = datetime.datetime.now(timezone.utc)
-            
-            try:
-                if query.lower() in ["indian stock market", "markets", "nifty 50", "sensex", "nifty"]:
-                    feeds = [
-                        ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", "Economic Times"),
-                        ("https://www.moneycontrol.com/rss/marketreports.xml", "Moneycontrol")
-                    ]
-                    for feed_url, default_source in feeds:
-                        try:
-                            req = urllib.request.Request(feed_url, headers={'User-Agent': 'Mozilla/5.0'})
-                            with urllib.request.urlopen(req, timeout=5) as response:
-                                root = ET.fromstring(response.read())
-                                for item in root.findall('./channel/item')[:15]:
-                                    title = item.find('title').text
-                                    link = item.find('link').text
-                                    pub_node = item.find('pubDate')
-                                    pubDate = pub_node.text if pub_node is not None else ""
-                                    source = default_source
-                                    try:
-                                        dt = datetime.datetime.strptime(pubDate, "%a, %d %b %Y %H:%M:%S %Z")
-                                        dt = dt.replace(tzinfo=timezone.utc)
-                                        hours_ago = (now - dt).total_seconds() / 3600
-                                    except:
-                                        hours_ago = 48
-                                    articles.append({"title": title, "link": link, "source": source, "hours_ago": hours_ago})
-                        except Exception as e:
-                            pass
 
+            # 1. Macro market RSS feeds
+            if query.lower() in ["indian stock market", "markets", "nifty 50", "sensex", "nifty"]:
+                feeds = [
+                    ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", "Economic Times"),
+                    ("https://www.moneycontrol.com/rss/marketreports.xml", "Moneycontrol")
+                ]
+                for feed_url, default_source in feeds:
+                    try:
+                        req = urllib.request.Request(feed_url, headers={'User-Agent': 'Mozilla/5.0'})
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            root = ET.fromstring(response.read())
+                            for item in root.findall('./channel/item')[:15]:
+                                title_elem = item.find('title')
+                                link_elem = item.find('link')
+                                if title_elem is None or not title_elem.text:
+                                    continue
+                                title = title_elem.text.strip()
+                                link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+                                pub_node = item.find('pubDate')
+                                pub_text = pub_node.text.strip() if pub_node is not None and pub_node.text else ""
+                                hours_ago = 24.0
+                                if pub_text:
+                                    try:
+                                        dt = email.utils.parsedate_to_datetime(pub_text)
+                                        if dt.tzinfo is None:
+                                            dt = dt.replace(tzinfo=timezone.utc)
+                                        hours_ago = (now - dt).total_seconds() / 3600
+                                    except Exception:
+                                        hours_ago = 24.0
+                                articles.append({"title": title, "link": link, "source": default_source, "hours_ago": hours_ago})
+                    except Exception as e:
+                        print(f"[News API] Feed error ({default_source}): {e}")
+
+            # 2. Google News RSS search
+            try:
                 search_term = query
                 if not any(w in query.lower() for w in ["stock", "share", "market", "nifty", "sensex"]):
                     search_term += " stock"
-                    
+
                 rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_term)}&hl=en-IN&gl=IN&ceid=IN:en"
                 req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     xml_data = response.read()
-                
+
                 root = ET.fromstring(xml_data)
                 for item in root.findall('./channel/item'):
-                    title = item.find('title').text
-                    link = item.find('link').text
-                    pubDate = item.find('pubDate').text
-                    source = item.find('source').text if item.find('source') is not None else "Google News"
-                    try:
-                        dt = datetime.datetime.strptime(pubDate, "%a, %d %b %Y %H:%M:%S %Z")
-                        dt = dt.replace(tzinfo=timezone.utc)
-                        hours_ago = (now - dt).total_seconds() / 3600
-                    except:
-                        hours_ago = 48
-                        
+                    title_elem = item.find('title')
+                    link_elem = item.find('link')
+                    if title_elem is None or not title_elem.text:
+                        continue
+                    title = title_elem.text.strip()
+                    link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+
+                    source_elem = item.find('source')
+                    source = source_elem.text.strip() if source_elem is not None and source_elem.text else "Google News"
+
+                    pub_node = item.find('pubDate')
+                    pub_text = pub_node.text.strip() if pub_node is not None and pub_node.text else ""
+                    hours_ago = 24.0
+                    if pub_text:
+                        try:
+                            dt = email.utils.parsedate_to_datetime(pub_text)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            hours_ago = (now - dt).total_seconds() / 3600
+                        except Exception:
+                            hours_ago = 24.0
+
                     articles.append({"title": title, "link": link, "source": source, "hours_ago": hours_ago})
             except Exception as e:
-                pass
+                print(f"[News API] Google RSS error for '{query}': {e}")
 
-            if ticker:
+            # 3. Yahoo Finance news (supports old & new yfinance schemas)
+            if ticker and yf:
                 try:
                     yf_ticker = yf.Ticker(ticker + ".NS")
-                    news = yf_ticker.news
+                    news = getattr(yf_ticker, "news", []) or []
                     for n in news:
-                        title = n.get("title", "")
-                        link = n.get("link", "")
-                        source = n.get("publisher", "Yahoo Finance")
-                        pub_time = n.get("providerPublishTime", 0)
-                        if pub_time:
+                        if not isinstance(n, dict):
+                            continue
+                        content = n.get("content") if isinstance(n.get("content"), dict) else n
+                        title = content.get("title") or n.get("title", "")
+                        if not title:
+                            continue
+
+                        link = ""
+                        if "canonicalUrl" in content and isinstance(content["canonicalUrl"], dict):
+                            link = content["canonicalUrl"].get("url", "")
+                        elif "clickThroughUrl" in content and isinstance(content["clickThroughUrl"], dict):
+                            link = content["clickThroughUrl"].get("url", "")
+                        if not link:
+                            link = content.get("link") or n.get("link", "")
+
+                        provider = content.get("provider")
+                        if isinstance(provider, dict):
+                            source = provider.get("displayName") or "Yahoo Finance"
+                        else:
+                            source = n.get("publisher") or "Yahoo Finance"
+
+                        pub_time = content.get("pubDate") or n.get("providerPublishTime", 0)
+                        hours_ago = 24.0
+                        if isinstance(pub_time, (int, float)) and pub_time > 0:
                             dt = datetime.datetime.fromtimestamp(pub_time, tz=timezone.utc)
                             hours_ago = (now - dt).total_seconds() / 3600
-                        else:
-                            hours_ago = 48
+                        elif isinstance(pub_time, str):
+                            try:
+                                dt = email.utils.parsedate_to_datetime(pub_time)
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=timezone.utc)
+                                hours_ago = (now - dt).total_seconds() / 3600
+                            except Exception:
+                                hours_ago = 24.0
+
                         articles.append({"title": title, "link": link, "source": source, "hours_ago": hours_ago})
                 except Exception as e:
-                    pass
+                    print(f"[News API] yfinance error for {ticker}: {e}")
 
             final_articles = []
             seen_titles = set()
             for a in articles:
-                if a["title"] in seen_titles: continue
+                if not a.get("title"):
+                    continue
+                if a["title"] in seen_titles:
+                    continue
                 seen_titles.add(a["title"])
-                
-                if a["hours_ago"] <= 24:
+
+                h = a.get("hours_ago", 48)
+                if h <= 24:
                     a["category"] = "Last 24 Hours"
-                elif a["hours_ago"] <= 168:
+                elif h <= 168:
                     a["category"] = "Past 7 Days"
+                elif h <= 720:
+                    a["category"] = "Past 30 Days"
                 else:
                     continue
-                    
+
                 final_articles.append(a)
-                
+
             final_articles.sort(key=lambda x: x["hours_ago"])
             payload = json.dumps(final_articles).encode('utf-8')
             self.send_response(200)
