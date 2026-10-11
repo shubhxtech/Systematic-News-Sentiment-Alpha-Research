@@ -3,19 +3,92 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
 import { createChart, CrosshairMode, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { ema } from '../lib/indicators';
-import { ArrowLeft, Activity, BookOpen, Check, X } from 'lucide-react';
+import { ArrowLeft, Activity, BookOpen, Check, X, Newspaper, ExternalLink, Clock, TrendingUp } from 'lucide-react';
 import { inr, pct, signalLabel, signalClass } from '../lib/format';
+import { getHistoricalCandles, UNIVERSE } from '../lib/upstoxApi';
+import { computeSignal } from '../lib/signal';
 
 export default function Company() {
   const { symbol } = useParams();
   const navigate = useNavigate();
-  const { screenerData, candleCache, theme } = useStore();
+  const { screenerData, candleCache, theme, updateTicker, setCandleCache } = useStore();
   const data = screenerData[symbol];
   
+  const [loadError, setLoadError] = useState(null);
+  const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+
   const chartContainerRef = useRef();
   
   const cache = candleCache[symbol] || { daily: [], intraday: [] };
   const candles = cache['daily'] || [];
+
+  // Fetch candle data and initialize ticker if missing (handles direct navigation / refresh)
+  useEffect(() => {
+    if (!symbol) return;
+    let active = true;
+
+    async function loadData() {
+      if (!candles.length || !data) {
+        try {
+          const res = await getHistoricalCandles(symbol);
+          if (!active) return;
+          if (res?.daily?.length) {
+            setCandleCache(symbol, res);
+            const last = res.daily[res.daily.length - 1];
+            const prev = res.daily[res.daily.length - 2];
+            const changePct = prev ? ((last.close - prev.close) / prev.close) * 100 : 0;
+            const { score, signal, breakdown, indicators, warning } = computeSignal(res.daily);
+            updateTicker(symbol, {
+              ticker: symbol,
+              name: UNIVERSE[symbol]?.name || symbol,
+              sector: UNIVERSE[symbol]?.sector || '–',
+              ltp: last?.close,
+              changePct,
+              signalScore: score,
+              signal,
+              breakdown,
+              signalWarning: warning,
+              rsi: indicators?.rsiVal,
+              ema21: indicators?.ema21,
+              ema50: indicators?.ema50,
+              volume: last?.volume,
+              week52High: Math.max(...res.daily.slice(-252).map(c => c.high)),
+              week52Low: Math.min(...res.daily.slice(-252).map(c => c.low)),
+            });
+          }
+        } catch (e) {
+          if (active) setLoadError(e.message);
+        }
+      }
+    }
+
+    loadData();
+    return () => { active = false; };
+  }, [symbol, candles.length, data, setCandleCache, updateTicker]);
+
+  // Fetch company news
+  useEffect(() => {
+    if (!symbol) return;
+    let active = true;
+    setNewsLoading(true);
+
+    const query = data?.name || UNIVERSE[symbol]?.name || symbol;
+    fetch(`/api/news?q=${encodeURIComponent(query)}&ticker=${symbol}`)
+      .then(res => res.json())
+      .then(d => {
+        if (active) setNews(Array.isArray(d) ? d : []);
+      })
+      .catch(err => {
+        console.error('Failed to load company news:', err);
+        if (active) setNews([]);
+      })
+      .finally(() => {
+        if (active) setNewsLoading(false);
+      });
+
+    return () => { active = false; };
+  }, [symbol, data?.name]);
 
   const chartData = useMemo(() => {
     if (!candles.length) return { prices: [], volume: [], ema21: [], ema50: [] };
@@ -73,7 +146,25 @@ export default function Company() {
     return () => chart.remove();
   }, [chartData, theme]);
 
-  if (!data) return <div className="p-10 text-center text-[var(--text-muted)]">Loading {symbol}...</div>;
+  if (!data && !loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-10 text-[var(--text-muted)]">
+        <div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm font-medium">Loading market data for {symbol}...</p>
+      </div>
+    );
+  }
+
+  if (!data && loadError) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-10 text-[var(--text-muted)] space-y-4">
+        <p className="text-sm text-[var(--down)]">Could not load data for {symbol}: {loadError}</p>
+        <button onClick={() => navigate(-1)} className="btn btn-primary text-xs">
+          <ArrowLeft size={14} /> Go Back
+        </button>
+      </div>
+    );
+  }
 
   const isUp = (data.changePct || 0) >= 0;
   
@@ -89,16 +180,6 @@ export default function Company() {
     { label: 'Momentum is Positive (RSI > 50)', passed: rsi > 50 },
     { label: 'MACD is Bullish', passed: macdHistogram > 0 },
   ];
-
-  let nlpLabel = 'Neutral';
-  let nlpColor = 'var(--text-muted)';
-  const nlpScore = data.nlpSentiment;
-  if (nlpScore == null) {
-    nlpLabel = 'No recent news';
-  } else {
-    if (nlpScore > 0.2) { nlpLabel = 'Positive'; nlpColor = 'var(--up)'; }
-    else if (nlpScore < -0.2) { nlpLabel = 'Negative'; nlpColor = 'var(--down)'; }
-  }
 
   return (
     <div className="flex flex-col h-full overflow-hidden" style={{ background: 'var(--bg)' }}>
@@ -203,37 +284,99 @@ export default function Company() {
             </div>
           </div>
 
-          {/* Fundamentals & NLP */}
+          {/* Fundamentals & Technical Health */}
           <div className="card shadow-sm">
             <div className="card-header border-b pb-3" style={{ borderColor: 'var(--border)' }}>
               <span className="card-title flex items-center gap-2 text-sm font-semibold uppercase tracking-wide">
                 <BookOpen size={15} style={{ color: 'var(--accent)' }} /> 
-                AI & Fundamentals
+                Factor Quality & Momentum
               </span>
             </div>
-            <div className="p-5 flex flex-col gap-5">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-faint)' }}>News Sentiment (7d)</div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-base" style={{ color: nlpColor }}>{nlpLabel}</span>
-                  {nlpScore != null && (
-                    <span className="text-sm font-medium px-2 py-0.5 rounded-sm bg-[var(--bg)] border" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
-                      Score: {nlpScore}
-                    </span>
-                  )}
-                </div>
+            <div className="p-5 flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider font-semibold" style={{ color: 'var(--text-faint)' }}>Quality Factor Score</span>
+                <span className="font-bold text-sm num" style={{ color: 'var(--text)' }}>
+                  {data.fundamentalScore != null ? `${data.fundamentalScore} / 100` : 'Neutral'}
+                </span>
               </div>
-              
               <div className="w-full h-px" style={{ background: 'var(--border)' }} />
-              
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: 'var(--text-faint)' }}>Quality Factor Score</div>
-                <div className="font-bold text-base num" style={{ color: 'var(--text)' }}>
-                  {data.fundamentalScore != null ? `${data.fundamentalScore} / 100` : '--'}
-                </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider font-semibold" style={{ color: 'var(--text-faint)' }}>RSI (14)</span>
+                <span className="font-bold text-sm num" style={{ color: rsi > 70 ? 'var(--down)' : rsi < 30 ? 'var(--up)' : 'var(--text)' }}>
+                  {rsi ? rsi.toFixed(1) : '--'}
+                </span>
+              </div>
+              <div className="w-full h-px" style={{ background: 'var(--border)' }} />
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-wider font-semibold" style={{ color: 'var(--text-faint)' }}>EMA 21 / 50</span>
+                <span className="font-medium text-xs num" style={{ color: 'var(--text)' }}>
+                  ₹{inr(data.ema21)} / ₹{inr(data.ema50)}
+                </span>
               </div>
             </div>
           </div>
+
+          {/* ── Recent Company News ───────────────────────────────────────── */}
+          <div className="card shadow-sm">
+            <div className="card-header border-b pb-3 flex items-center justify-between" style={{ borderColor: 'var(--border)' }}>
+              <span className="card-title flex items-center gap-2 text-sm font-semibold uppercase tracking-wide">
+                <Newspaper size={15} style={{ color: 'var(--accent)' }} /> 
+                Recent News & Catalysts
+              </span>
+              {news.length > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+                  {news.length} {news.length === 1 ? 'story' : 'stories'}
+                </span>
+              )}
+            </div>
+            <div className="p-0 flex flex-col divide-y divide-[var(--border)]">
+              {newsLoading ? (
+                <div className="p-5 space-y-4">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="animate-pulse space-y-2">
+                      <div className="h-3.5 bg-[var(--bg)] rounded w-4/5"></div>
+                      <div className="h-2.5 bg-[var(--bg)] rounded w-1/3"></div>
+                    </div>
+                  ))}
+                </div>
+              ) : news.length > 0 ? (
+                news.slice(0, 5).map((item, idx) => {
+                  const hours = Math.round(item.hours_ago || 0);
+                  const timeStr = hours < 1 ? 'Just now' : hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+                  return (
+                    <a
+                      key={idx}
+                      href={item.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-4 hover:bg-[var(--bg-hover)] transition-colors group block"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <h4 className="text-xs font-semibold leading-snug group-hover:text-[var(--accent)] transition-colors line-clamp-2" style={{ color: 'var(--text)' }}>
+                          {item.title}
+                        </h4>
+                        <ExternalLink size={12} className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[var(--accent)] mt-0.5" />
+                      </div>
+                      <div className="flex items-center gap-2.5 mt-2 text-[11px]" style={{ color: 'var(--text-faint)' }}>
+                        <span className="px-1.5 py-0.5 rounded font-medium text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
+                          {item.source}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Clock size={10} />
+                          {timeStr}
+                        </span>
+                      </div>
+                    </a>
+                  );
+                })
+              ) : (
+                <div className="p-6 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
+                  No recent news headlines found for {data.name || data.ticker}.
+                </div>
+              )}
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
