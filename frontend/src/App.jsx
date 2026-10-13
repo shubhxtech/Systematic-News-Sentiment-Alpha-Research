@@ -4,7 +4,7 @@ import { useStore } from './lib/store';
 import { useScreenerData } from './hooks/useScreenerData';
 import {
   LineChart, LayoutGrid, Star, BellRing, Settings,
-  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper
+  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper, CalendarClock
 } from 'lucide-react';
 import Screens          from './pages/Screens';
 import Company          from './pages/Company';
@@ -13,6 +13,7 @@ import SectorHeatmap    from './components/SectorHeatmap';
 import AlertsPanel      from './components/AlertsPanel';
 import WatchlistPanel   from './components/WatchlistPanel';
 import News             from './pages/News';
+import Earnings         from './pages/Earnings';
 
 export default function App() {
   const navigate = useNavigate();
@@ -58,6 +59,7 @@ export default function App() {
             <NavLink active={path === '/'} onClick={() => navigate('/')} icon={LayoutGrid} label="Screener" />
             <NavLink active={path === '/watchlist'} onClick={() => navigate('/watchlist')} icon={Star} label={`Watchlist${watchlist.length ? ` (${watchlist.length})` : ''}`} />
             <NavLink active={path === '/heatmap'} onClick={() => navigate('/heatmap')} icon={LayoutGrid} label="Sectors" />
+            <NavLink active={path === '/earnings'} onClick={() => navigate('/earnings')} icon={CalendarClock} label="Earnings" />
             <NavLink active={path === '/news'} onClick={() => navigate('/news')} icon={Newspaper} label="News" />
             <NavLink active={path === '/alerts'} onClick={() => navigate('/alerts')} icon={BellRing} label="Alerts" />
           </nav>
@@ -96,6 +98,7 @@ export default function App() {
           <Route path="/company/:symbol" element={<Company />} />
           <Route path="/watchlist" element={<WatchlistPanel />} />
           <Route path="/heatmap" element={<SectorHeatmap />} />
+          <Route path="/earnings" element={<Earnings />} />
           <Route path="/news" element={<News />} />
           <Route path="/alerts" element={<AlertsPanel />} />
           <Route path="/settings" element={<SettingsPanel />} />
