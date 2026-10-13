@@ -195,6 +195,10 @@ export default function Company() {
             <span className="text-xs uppercase font-bold tracking-wide px-2 py-0.5 rounded" style={{ background: 'var(--accent-bg)', color: 'var(--accent)' }}>
               {data.sector}
             </span>
+            <a href={`https://www.screener.in/company/${encodeURIComponent(symbol)}/consolidated/`} target="_blank" rel="noopener noreferrer"
+               className="inline-flex items-center gap-1 text-xs font-medium hover:underline" style={{ color: 'var(--accent)' }}>
+              Screener.in <ExternalLink size={11} />
+            </a>
           </div>
           <div className="text-sm" style={{ color: 'var(--text-faint)' }}>{data.name}</div>
         </div>
