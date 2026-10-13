@@ -20,6 +20,7 @@ except ImportError:
     yf = None
 
 import state
+import earnings
 from data_manager import TICKER_ALIASES
 
 class JSONEncoderExt(json.JSONEncoder):
@@ -43,6 +44,13 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.end_headers()
 
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, cls=JSONEncoderExt).encode()
+        self.send_response(code)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         url = urlparse(self.path)
         payload = {}
@@ -53,6 +61,23 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
             post_data = self.rfile.read(content_length)
             if post_data:
                 payload = json.loads(post_data)
+
+        if url.path == "/api/earnings/upload":
+            try:
+                text = payload.get("csv", "")
+                if not text.strip():
+                    return self._json({"error": "empty CSV"}, 400)
+                earnings.parse_board_meetings(text)  # fail fast on bad format
+                job_id = earnings.start_job(text, payload.get("filename", "upload.csv"))
+                return self._json({"job_id": job_id})
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
+
+        if url.path == "/api/earnings/fundamentals":
+            try:
+                return self._json(earnings.merge_fundamentals_csv(payload.get("csv", "")))
+            except Exception as e:
+                return self._json({"error": str(e)}, 400)
 
         if url.path in ["/api/start-sim", "/api/stop-sim"]:
             self.send_response(200)
@@ -102,6 +127,28 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
+
+        if url.path == "/api/earnings/status":
+            q = urllib.parse.parse_qs(url.query)
+            job = earnings.get_job((q.get("id") or [""])[0])
+            return self._json(job or {"error": "unknown job"}, 200 if job else 404)
+
+        if url.path == "/api/earnings/runs":
+            return self._json(earnings.list_runs())
+
+        if url.path == "/api/earnings/results":
+            q = urllib.parse.parse_qs(url.query)
+            fmt = (q.get("format") or ["json"])[0]
+            body = earnings.read_run((q.get("run") or ["latest"])[0], fmt) if fmt in ("json", "csv") else None
+            if body is None:
+                return self._json({"error": "no results yet"}, 404)
+            self.send_response(200)
+            self.send_header('Content-type', 'text/csv' if fmt == "csv" else 'application/json')
+            if q.get("download"):
+                self.send_header('Content-Disposition', f'attachment; filename="earnings_screen.{fmt}"')
+            self.end_headers()
+            self.wfile.write(body)
+            return
 
         if url.path == "/api/sentiment/summary":
             self.send_response(200)
@@ -328,6 +375,13 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
                     continue
 
                 final_articles.append(a)
+
+            # Semantic deduplication (fastembed MiniLM + guards + multi-source attribution)
+            try:
+                from news_dedup import dedupe_articles
+                final_articles = dedupe_articles(final_articles, window_h=24)
+            except Exception as e:
+                print(f"[News API] Deduplication error: {e}")
 
             final_articles.sort(key=lambda x: x["hours_ago"])
             payload = json.dumps(final_articles).encode('utf-8')

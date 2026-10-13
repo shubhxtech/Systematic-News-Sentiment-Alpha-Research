@@ -8,3 +8,8 @@ nlp_cache.json
 .DS_Store
 *.db
 .logs/
+backend/data/instruments_eq.json
+backend/data/earnings/20*
+backend/data/earnings/latest.*
+earnings_screen.csv
+fundamentals.csv
