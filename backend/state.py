@@ -13,7 +13,7 @@ if not UPSTOX_TOKEN:
     try:
         with open(STATIC_DIR / ".upstox_token", "r") as f:
             UPSTOX_TOKEN = f.read().strip()
-    except:
+    except OSError:
         pass
 
 APP_STATE = {

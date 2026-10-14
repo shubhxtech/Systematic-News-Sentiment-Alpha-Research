@@ -13,3 +13,5 @@ backend/data/earnings/20*
 backend/data/earnings/latest.*
 earnings_screen.csv
 fundamentals.csv
+backend/data/cache/
+backend/data/premomentum/

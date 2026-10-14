@@ -1,6 +1,10 @@
 import pandas as pd
-import yfinance as yf
 import state
+
+try:
+    import yfinance as yf
+except ImportError:  # optional: the screener still runs, just without yfinance fundamentals
+    yf = None
 import numpy as np
 from pathlib import Path
 
@@ -96,6 +100,10 @@ def init_global_caches():
     
     cache_file = base_dir / "market_data_cache.csv"
     
+    if not cache_file.exists() and yf is None:
+        print("yfinance not installed — skipping OHLC cache build.")
+        state.APP_STATE["yfinance_cache"] = pd.DataFrame()
+        return
     if cache_file.exists():
         print(f"Loading persistent OHLC cache from disk ({cache_file.name})...")
         try:
@@ -119,27 +127,34 @@ def init_global_caches():
             print(f"❌ Failed to build OHLC price cache: {e}")
             state.APP_STATE["yfinance_cache"] = pd.DataFrame()
 
+def _ok(v):
+    try:
+        return v is not None and not np.isnan(float(v))
+    except (TypeError, ValueError):
+        return False
+
+
 def compute_quality_score(m: dict) -> float:
     score = 50.0
     roe = m.get("roe")
-    if roe is not None and not np.isnan(roe):
+    if _ok(roe):
         score += min(20.0, float(roe) * 80.0)
     de = m.get("debt_equity")
-    if de is not None and not np.isnan(de):
-        de = float(de)
+    if _ok(de):
+        de = float(de) / 100.0  # yfinance reports debt/equity in percent (45.2 = 0.452x)
         if de < 0.5:   score += 15.0
         elif de < 1.0: score += 8.0
         elif de < 2.0: score += 2.0
         elif de < 3.0: score -= 5.0
         else:          score -= 15.0
     margin = m.get("net_margin")
-    if margin is not None and not np.isnan(margin):
+    if _ok(margin):
         score += min(15.0, float(margin) * 50.0)
     rev_g = m.get("rev_growth")
-    if rev_g is not None and not np.isnan(rev_g):
+    if _ok(rev_g):
         score += min(10.0, float(rev_g) * 40.0)
     pe = m.get("pe")
-    if pe is not None and not np.isnan(pe):
+    if _ok(pe):
         pe = float(pe)
         if pe < 0:     score -= 10.0
         elif pe > 80:  score -= 10.0
@@ -148,6 +163,9 @@ def compute_quality_score(m: dict) -> float:
     return round(float(np.clip(score, 0.0, 100.0)), 1)
 
 def fetch_fundamental_cache():
+    if yf is None:
+        print("[Fundamentals] yfinance not installed — skipping (pip install yfinance).")
+        return
     tickers = [k for k in TICKER_ALIASES.keys() if not k.startswith("__")]
     print(f"[Fundamentals] Fetching data for {len(tickers)} tickers in background...")
     cache = {}
@@ -155,7 +173,7 @@ def fetch_fundamental_cache():
         ticker_ns = base + ".NS"
         try:
             info = yf.Ticker(ticker_ns).info
-            if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
+            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
                 continue
             raw = {
                 "name":        info.get("longName") or info.get("shortName") or base,
@@ -178,7 +196,10 @@ def fetch_fundamental_cache():
             raw["score"] = compute_quality_score(raw)
             cache[ticker_ns] = raw
         except Exception as e:
-            pass
+            print(f"[Fundamentals] {ticker_ns}: {type(e).__name__}: {e}")
+    if not cache:
+        print("[Fundamentals] Fetched nothing — keeping the previous cache.")
+        return
     with state.state_lock:
         state.APP_STATE["fundamental_cache"] = cache
     scores = [v["score"] for v in cache.values()]
