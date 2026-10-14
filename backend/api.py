@@ -1,427 +1,408 @@
-import json
 import copy
-import datetime
-import email.utils
-import urllib.request
-import urllib.parse
-import xml.etree.ElementTree as ET
-from datetime import timezone
-import logging
-import pandas as pd
-import numpy as np
+import json
 import os
-import requests
+import traceback
+import urllib.parse
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-try:
-    import yfinance as yf
-except ImportError:
-    yf = None
+import numpy as np
+import pandas as pd
+import requests
 
-import state
+import catalysts
 import earnings
-from data_manager import TICKER_ALIASES
+import market_data as md
+import premomentum
+import state
+from news import fetch_news
+
+MAX_BODY = 20 * 1024 * 1024  # uploads are CSV text; 20 MB is plenty
+
 
 class JSONEncoderExt(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.integer): return int(obj)
-        if isinstance(obj, np.floating): return float(obj)
+        if isinstance(obj, np.floating): return None if np.isnan(obj) or np.isinf(obj) else float(obj)
+        if isinstance(obj, np.bool_): return bool(obj)
         if isinstance(obj, np.ndarray): return obj.tolist()
-        return super().default(obj)
+        if isinstance(obj, (pd.Timestamp,)): return obj.isoformat()
+        if isinstance(obj, (pd.DataFrame, pd.Series)): return None  # internal caches are not API data
+        return str(obj)
+
+
+def _profile_for(symbol=None, isin=None, bse=None):
+    """Name, ISIN, revenue and market cap for a company, from the instrument + fundamentals masters."""
+    symbol = (symbol or "").upper() or None
+    try:
+        instr = md.load_instruments()
+    except Exception:
+        instr = {"nse": {}, "bse": {}, "nse_rev": {}}
+    if not isin and symbol:
+        isin = instr.get("nse_rev", {}).get(symbol)
+    if not isin and bse:
+        isin = (instr["bse"].get(str(bse)) or {}).get("isin")
+    if isin and not symbol:
+        symbol = instr["nse"].get(isin)
+    out = {"symbol": symbol, "isin": isin, "bse_code": bse}
+    m = earnings.load_master()
+    hit = m[m["ISIN Code"] == isin] if isin else m.iloc[0:0]
+    if hit.empty and symbol:
+        hit = m[m["NSE Code"].astype(str).str.upper() == symbol]
+    if not hit.empty:
+        f = hit.iloc[-1]
+        sales_q = earnings._num(f.get("Sales latest quarter"))
+        out.update(name=f.get("Name"), annual_revenue_cr=sales_q * 4 if sales_q else None,
+                   market_cap_cr=earnings._num(f.get("Market Capitalization")),
+                   bse_code=out["bse_code"] or (int(f["BSE Code"]) if pd.notna(f.get("BSE Code")) else None))
+    if isin:  # the exchange name ("Chennai Petroleum Corporation") searches better than "C P C L"
+        for code, b in instr["bse"].items():
+            if b.get("isin") == isin:
+                if b.get("name"):
+                    out["short_name"] = out.get("name")
+                    out["name"] = _title(b["name"])
+                out["bse_code"] = out["bse_code"] or code
+                break
+    return out
+
+
+def _title(name):
+    n = name.strip().rstrip(".")
+    return n.title() if n.isupper() else n
+
 
 class LiveAPIHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    # ── plumbing ───────────────────────────────────────────────────────────
     def end_headers(self):
         origin = self.headers.get("Origin")
-        if origin and ("localhost" in origin or "127.0.0.1" in origin):
-            self.send_header('Access-Control-Allow-Origin', origin)
-            self.send_header('Access-Control-Allow-Credentials', 'true')
+        if origin:
+            host = urlparse(origin).hostname or ""
+            if host in ("localhost", "127.0.0.1", "::1"):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Credentials", "true")
+                self.send_header("Vary", "Origin")
         super().end_headers()
 
     def do_OPTIONS(self):
-        self.send_response(200)
+        self.send_response(204)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _json(self, obj, code=200):
-        body = json.dumps(obj, cls=JSONEncoderExt).encode()
+    def _send(self, body, code=200, ctype="application/json", extra=None):
+        if isinstance(body, str):
+            body = body.encode("utf-8")
         self.send_response(code)
-        self.send_header('Content-type', 'application/json')
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):
-        url = urlparse(self.path)
-        payload = {}
-        content_length_str = self.headers.get('Content-Length')
-        
-        if content_length_str:
-            content_length = int(content_length_str)
-            post_data = self.rfile.read(content_length)
-            if post_data:
-                payload = json.loads(post_data)
+    def _json(self, obj, code=200):
+        self._send(json.dumps(obj, cls=JSONEncoderExt, allow_nan=False) if not _has_nan(obj)
+                   else json.dumps(_nan_to_none(obj), cls=JSONEncoderExt), code)
 
-        if url.path == "/api/earnings/upload":
+    def _err(self, msg, code=400):
+        self._json({"error": msg}, code)
+
+    def _query(self):
+        q = urllib.parse.parse_qs(urlparse(self.path).query)
+        return lambda k, d="": (q.get(k) or [d])[0].strip()
+
+    def _body(self):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("bad Content-Length")
+        if n > MAX_BODY:
+            raise ValueError("request body too large")
+        raw = self.rfile.read(n) if n > 0 else b""
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"invalid JSON: {e.msg}")
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return data
+
+    def _run(self, fn):
+        try:
+            fn()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            traceback.print_exc()
             try:
-                text = payload.get("csv", "")
-                if not text.strip():
-                    return self._json({"error": "empty CSV"}, 400)
-                earnings.parse_board_meetings(text)  # fail fast on bad format
-                job_id = earnings.start_job(text, payload.get("filename", "upload.csv"))
-                return self._json({"job_id": job_id})
-            except Exception as e:
-                return self._json({"error": str(e)}, 400)
+                self._err(f"internal error: {type(e).__name__}: {e}", 500)
+            except Exception:
+                pass
 
-        if url.path == "/api/earnings/fundamentals":
+    def log_message(self, format, *args):
+        pass
+
+    # ── POST ───────────────────────────────────────────────────────────────
+    def do_POST(self):
+        self._run(self._post)
+
+    def _post(self):
+        path = urlparse(self.path).path
+        try:
+            payload = self._body()
+        except ValueError as e:
+            return self._err(str(e), 400)
+
+        if path == "/api/earnings/upload":
+            text = payload.get("csv", "")
+            if not isinstance(text, str) or not text.strip():
+                return self._err("empty CSV")
+            try:
+                earnings.parse_board_meetings(text)  # fail fast on bad format
+            except Exception as e:
+                return self._err(str(e))
+            return self._json({"job_id": earnings.start_job(text, str(payload.get("filename") or "upload.csv"))})
+
+        if path == "/api/earnings/fundamentals":
             try:
                 return self._json(earnings.merge_fundamentals_csv(payload.get("csv", "")))
             except Exception as e:
-                return self._json({"error": str(e)}, 400)
+                return self._err(str(e))
 
-        if url.path in ["/api/start-sim", "/api/stop-sim"]:
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"status":"ok", "msg": "Backtesting removed"}')
-            return
+        if path == "/api/premomentum/scan":
+            try:
+                days = int(payload.get("days_ahead", 30))
+                top_k = int(payload.get("top_k", 60))
+            except (TypeError, ValueError):
+                return self._err("days_ahead and top_k must be integers")
+            days, top_k = min(max(days, 3), 60), min(max(top_k, 5), 200)
+            return self._json({"job_id": premomentum.start(days, top_k)})
 
-        elif url.path == "/api/set-fundamental-filter":
+        if path in ("/api/start-sim", "/api/stop-sim"):
+            return self._json({"status": "ok", "msg": "Backtesting removed"})
+
+        if path == "/api/set-fundamental-filter":
             try:
                 with state.state_lock:
                     if "min_score" in payload:
                         state.APP_STATE["fundamental_min_score"] = int(payload["min_score"])
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "ok", "fundamental_min_score": state.APP_STATE["fundamental_min_score"]}).encode())
-            except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-            return
-            
-        elif url.path == "/api/settings/upstox-token":
-            try:
-                token = payload.get("token", "")
-                state.UPSTOX_TOKEN = token
-                token_file = state.STATIC_DIR / ".upstox_token"
-                with open(token_file, "w") as f:
+                    return self._json({"status": "ok", "fundamental_min_score": state.APP_STATE["fundamental_min_score"]})
+            except (TypeError, ValueError) as e:
+                return self._err(str(e))
+
+        if path == "/api/settings/upstox-token":
+            token = payload.get("token", "")
+            if not isinstance(token, str):
+                return self._err("token must be a string")
+            token = token.strip()
+            state.UPSTOX_TOKEN = token
+            token_file = state.STATIC_DIR / ".upstox_token"
+            if token:
+                fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
                     f.write(token)
-                os.chmod(token_file, 0o600)
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok"}')
-            except Exception as e:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-            return
-            
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'{"error": "Not Found"}')
-            return
+            elif token_file.exists():
+                token_file.unlink()
+            return self._json({"status": "ok", "has_upstox_token": bool(token)})
 
+        return self._err("Not Found", 404)
+
+    # ── GET ────────────────────────────────────────────────────────────────
     def do_GET(self):
+        self._run(self._get)
+
+    def _get(self):
         url = urlparse(self.path)
+        path = url.path
+        q = self._query()
 
-        if url.path == "/api/earnings/status":
-            q = urllib.parse.parse_qs(url.query)
-            job = earnings.get_job((q.get("id") or [""])[0])
-            return self._json(job or {"error": "unknown job"}, 200 if job else 404)
+        if path == "/api/health":
+            return self._json({"status": "ok"})
 
-        if url.path == "/api/earnings/runs":
+        # earnings screen
+        if path == "/api/earnings/status":
+            job = earnings.get_job(q("id"))
+            return self._json(job or {"error": "unknown job", "status": "unknown"}, 200 if job else 404)
+        if path == "/api/earnings/runs":
             return self._json(earnings.list_runs())
+        if path == "/api/earnings/results":
+            return self._results(earnings.read_run, q, "earnings_screen")
 
-        if url.path == "/api/earnings/results":
-            q = urllib.parse.parse_qs(url.query)
-            fmt = (q.get("format") or ["json"])[0]
-            body = earnings.read_run((q.get("run") or ["latest"])[0], fmt) if fmt in ("json", "csv") else None
-            if body is None:
-                return self._json({"error": "no results yet"}, 404)
-            self.send_response(200)
-            self.send_header('Content-type', 'text/csv' if fmt == "csv" else 'application/json')
-            if q.get("download"):
-                self.send_header('Content-Disposition', f'attachment; filename="earnings_screen.{fmt}"')
-            self.end_headers()
-            self.wfile.write(body)
-            return
+        # pre-results momentum
+        if path == "/api/premomentum/status":
+            job = premomentum.get_job(q("id"))
+            return self._json(job or {"error": "unknown job", "status": "unknown"}, 200 if job else 404)
+        if path == "/api/premomentum/active":
+            return self._json(premomentum.active_job() or {"status": "idle"})
+        if path == "/api/premomentum/runs":
+            return self._json(premomentum.list_runs())
+        if path == "/api/premomentum/results":
+            return self._results(premomentum.read_run, q, "premomentum")
 
-        if url.path == "/api/sentiment/summary":
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{}')
-            return
+        # catalyst intelligence for one company
+        if path == "/api/catalysts":
+            return self._catalysts(q)
 
-        if url.path.startswith("/api/sentiment/"):
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"series": []}')
-            return
+        if path == "/api/instrument":
+            prof = _profile_for(q("symbol"), q("isin") or None, q("bse") or None)
+            if not prof.get("isin"):
+                return self._err("unknown instrument", 404)
+            seg = "NSE_EQ" if prof.get("symbol") else "BSE_EQ"
+            return self._json({**prof, "key": f"{seg}|{prof['isin']}"})
 
-        if url.path in ["/api/transcript-signals", "/api/insider-signals"]:
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'[]')
-            return
-            
-        if url.path == "/api/regime-status":
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{"current_regime": "N/A", "confidence": 0, "history": []}')
-            return
-            
-        if url.path == "/api/factor-scores":
+        if path == "/api/candles":
+            prof = _profile_for(q("symbol"), q("isin") or None)
+            if not prof.get("isin"):
+                return self._err("unknown instrument", 404)
+            try:
+                days = min(max(int(q("days", "400")), 30), 1100)
+            except ValueError:
+                days = 400
+            df, seg = md.equity_candles(prof["isin"], days=days)
+            if df is None:
+                return self._err("no candle data", 502)
+            rows = [{"date": t.strftime("%Y-%m-%dT00:00:00+05:30"), "open": r.o, "high": r.h, "low": r.l,
+                     "close": r.c, "volume": r.v} for t, r in df.iterrows()]
+            return self._json({"symbol": prof.get("symbol"), "isin": prof["isin"], "segment": seg,
+                               "name": prof.get("name"), "candles": rows})
+
+        if path == "/api/news":
+            query = q("q", "Indian Stock Market") or "Indian Stock Market"
+            ticker = q("ticker")
+            articles = fetch_news(query, ticker)
+            try:
+                articles = catalysts.analyse(articles, company_name=query if ticker else "")
+            except Exception:
+                traceback.print_exc()  # classification is an enhancement; never fail the feed over it
+            return self._json(articles)
+
+        # legacy / stub endpoints kept for older UI code
+        if path == "/api/sentiment/summary":
+            return self._json({})
+        if path.startswith("/api/sentiment/"):
+            return self._json({"series": []})
+        if path in ("/api/transcript-signals", "/api/insider-signals"):
+            return self._json([])
+        if path == "/api/regime-status":
+            return self._json({"current_regime": "N/A", "confidence": 0, "history": []})
+        if path in ("/api/optimal-config", "/api/tearsheet", "/api/signals-db", "/api/trade-journal"):
+            return self._json({})
+
+        if path == "/api/factor-scores":
             with state.state_lock:
-                df = state.APP_STATE.get("factor_scores", pd.DataFrame())
-                data = df.to_dict(orient="index") if df is not None and not df.empty else {}
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(data).encode())
-            return
+                df = state.APP_STATE.get("factor_scores")
+                data = df.to_dict(orient="index") if isinstance(df, pd.DataFrame) and not df.empty else {}
+            return self._json(data)
 
-        if url.path == "/api/fundamentals":
+        if path == "/api/fundamentals":
             with state.state_lock:
-                fc = copy.deepcopy(state.APP_STATE.get("fundamental_cache", {}))
+                fc = copy.deepcopy(state.APP_STATE.get("fundamental_cache") or {})
                 min_score = state.APP_STATE.get("fundamental_min_score", 45)
-            out = {"min_score": min_score, "loaded": len(fc) > 0, "stocks": fc}
-            payload = json.dumps(out, cls=JSONEncoderExt).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Content-length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
+            return self._json({"min_score": min_score, "loaded": len(fc) > 0, "stocks": fc})
 
-        if url.path in ["/api/optimal-config", "/api/tearsheet", "/api/signals-db", "/api/trade-journal"]:
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(b'{}')
-            return
+        if path == "/api/settings/status":
+            return self._json({"has_upstox_token": bool(state.UPSTOX_TOKEN)})
 
-        if url.path == "/api/settings/status":
-            payload = json.dumps({"has_upstox_token": bool(state.UPSTOX_TOKEN)}).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Content-length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-
-        if url.path == "/api/live-state":
+        if path == "/api/live-state":
             with state.state_lock:
-                data = copy.deepcopy(state.APP_STATE)
-                data["timeline_bounds"] = {"min": "2024-01-01", "max": "2024-12-31"}
-                data["regime"] = "N/A"
-            payload = json.dumps(data, cls=JSONEncoderExt).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Content-length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-            
-        if url.path == "/api/news":
-            parsed_query = urllib.parse.parse_qs(url.query) if url.query else {}
-            query = parsed_query.get("q", ["Indian Stock Market"])[0].strip()
-            ticker = parsed_query.get("ticker", [""])[0].strip()
+                # Skip the price-cache DataFrames: they are large and not JSON.
+                data = {k: copy.deepcopy(v) for k, v in state.APP_STATE.items()
+                        if not isinstance(v, (pd.DataFrame, pd.Series))}
+            data["timeline_bounds"] = {"min": "2024-01-01", "max": "2024-12-31"}
+            data["regime"] = "N/A"
+            return self._json(data)
 
-            articles = []
-            now = datetime.datetime.now(timezone.utc)
+        if path.startswith("/upstox-api/"):
+            return self._proxy_upstox(url)
 
-            # 1. Macro market RSS feeds
-            if query.lower() in ["indian stock market", "markets", "nifty 50", "sensex", "nifty"]:
-                feeds = [
-                    ("https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms", "Economic Times"),
-                    ("https://www.moneycontrol.com/rss/marketreports.xml", "Moneycontrol")
-                ]
-                for feed_url, default_source in feeds:
-                    try:
-                        req = urllib.request.Request(feed_url, headers={'User-Agent': 'Mozilla/5.0'})
-                        with urllib.request.urlopen(req, timeout=5) as response:
-                            root = ET.fromstring(response.read())
-                            for item in root.findall('./channel/item')[:15]:
-                                title_elem = item.find('title')
-                                link_elem = item.find('link')
-                                if title_elem is None or not title_elem.text:
-                                    continue
-                                title = title_elem.text.strip()
-                                link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
-                                pub_node = item.find('pubDate')
-                                pub_text = pub_node.text.strip() if pub_node is not None and pub_node.text else ""
-                                hours_ago = 24.0
-                                if pub_text:
-                                    try:
-                                        dt = email.utils.parsedate_to_datetime(pub_text)
-                                        if dt.tzinfo is None:
-                                            dt = dt.replace(tzinfo=timezone.utc)
-                                        hours_ago = (now - dt).total_seconds() / 3600
-                                    except Exception:
-                                        hours_ago = 24.0
-                                articles.append({"title": title, "link": link, "source": default_source, "hours_ago": hours_ago})
-                    except Exception as e:
-                        print(f"[News API] Feed error ({default_source}): {e}")
+        return self._err("Not Found", 404)
 
-            # 2. Google News RSS search
+    # ── helpers ────────────────────────────────────────────────────────────
+    def _results(self, reader, q, name):
+        fmt = q("format", "json")
+        if fmt not in ("json", "csv"):
+            return self._err("format must be json or csv")
+        body = reader(q("run", "latest") or "latest", fmt)
+        if body is None:
+            return self._err("no results yet", 404)
+        extra = {"Content-Disposition": f'attachment; filename="{name}.{fmt}"'} if q("download") else None
+        self._send(body, 200, "text/csv; charset=utf-8" if fmt == "csv" else "application/json", extra)
+
+    def _catalysts(self, q):
+        prof = _profile_for(q("symbol"), q("isin") or None, q("bse") or None)
+        if not prof.get("isin") and not prof.get("symbol"):
+            return self._err("unknown company", 404)
+        try:
+            days = min(max(int(q("days", "45")), 7), 365)
+        except ValueError:
+            days = 45
+        notes = []
+        raw = []
+        if prof.get("symbol"):
+            filings = md.nse_announcements(prof["symbol"], days)
+            if not filings:
+                notes.append("no NSE filings returned (none in window, or nseindia.com unreachable)")
+            raw += filings
+        elif prof.get("bse_code"):
+            raw += md.bse_announcements(prof["bse_code"], days)
+        if q("news", "1") != "0":
+            name = prof.get("name") or prof.get("symbol") or ""
             try:
-                search_term = query
-                if not any(w in query.lower() for w in ["stock", "share", "market", "nifty", "sensex"]):
-                    search_term += " stock"
-
-                rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(search_term)}&hl=en-IN&gl=IN&ceid=IN:en"
-                req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    xml_data = response.read()
-
-                root = ET.fromstring(xml_data)
-                for item in root.findall('./channel/item'):
-                    title_elem = item.find('title')
-                    link_elem = item.find('link')
-                    if title_elem is None or not title_elem.text:
-                        continue
-                    title = title_elem.text.strip()
-                    link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
-
-                    source_elem = item.find('source')
-                    source = source_elem.text.strip() if source_elem is not None and source_elem.text else "Google News"
-
-                    pub_node = item.find('pubDate')
-                    pub_text = pub_node.text.strip() if pub_node is not None and pub_node.text else ""
-                    hours_ago = 24.0
-                    if pub_text:
-                        try:
-                            dt = email.utils.parsedate_to_datetime(pub_text)
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=timezone.utc)
-                            hours_ago = (now - dt).total_seconds() / 3600
-                        except Exception:
-                            hours_ago = 24.0
-
-                    articles.append({"title": title, "link": link, "source": source, "hours_ago": hours_ago})
+                arts = fetch_news(name, prof.get("symbol") or "", max_age_h=days * 24)
+                for a in arts:
+                    a.setdefault("source_type", "media")
+                raw += arts
             except Exception as e:
-                print(f"[News API] Google RSS error for '{query}': {e}")
+                notes.append(f"news unavailable: {e}")
+        df = md.equity_candles(prof["isin"], days=400)[0] if prof.get("isin") else None
+        items = catalysts.analyse(raw, prof.get("name") or "", prof.get("annual_revenue_cr"),
+                                  prof.get("market_cap_cr"), df)
+        if q("include_routine", "0") != "1":
+            items = [i for i in items if i["event_type"] != "routine"]
+        return self._json({"profile": prof, "summary": catalysts.summarise(items), "items": items, "notes": notes})
 
-            # 3. Yahoo Finance news (supports old & new yfinance schemas)
-            if ticker and yf:
-                try:
-                    yf_ticker = yf.Ticker(ticker + ".NS")
-                    news = getattr(yf_ticker, "news", []) or []
-                    for n in news:
-                        if not isinstance(n, dict):
-                            continue
-                        content = n.get("content") if isinstance(n.get("content"), dict) else n
-                        title = content.get("title") or n.get("title", "")
-                        if not title:
-                            continue
+    def _proxy_upstox(self, url):
+        upstream_path = url.path[len("/upstox-api"):]
+        if ".." in upstream_path or not upstream_path.startswith("/v"):
+            return self._err("bad path", 400)
+        public = "/historical-candle/" in upstream_path  # Upstox serves these without auth
+        if not state.UPSTOX_TOKEN and not public:
+            return self._err("Missing Upstox Token", 401)
+        target = "https://api.upstox.com" + upstream_path + (f"?{url.query}" if url.query else "")
+        headers = {"Accept": "application/json", "Api-Version": "2.0", **md.UA}
+        if state.UPSTOX_TOKEN:
+            headers["Authorization"] = f"Bearer {state.UPSTOX_TOKEN}"
+        try:
+            resp = requests.get(target, headers=headers, timeout=15)
+            if resp.status_code == 401 and public and "Authorization" in headers:
+                headers.pop("Authorization")  # expired token: public data still works without it
+                resp = requests.get(target, headers=headers, timeout=15)
+        except requests.RequestException as e:
+            return self._err(f"upstream error: {e}", 502)
+        self._send(resp.content, resp.status_code, resp.headers.get("Content-Type", "application/json"))
 
-                        link = ""
-                        if "canonicalUrl" in content and isinstance(content["canonicalUrl"], dict):
-                            link = content["canonicalUrl"].get("url", "")
-                        elif "clickThroughUrl" in content and isinstance(content["clickThroughUrl"], dict):
-                            link = content["clickThroughUrl"].get("url", "")
-                        if not link:
-                            link = content.get("link") or n.get("link", "")
 
-                        provider = content.get("provider")
-                        if isinstance(provider, dict):
-                            source = provider.get("displayName") or "Yahoo Finance"
-                        else:
-                            source = n.get("publisher") or "Yahoo Finance"
+def _has_nan(o):
+    if isinstance(o, float):
+        return o != o or o in (float("inf"), float("-inf"))
+    if isinstance(o, dict):
+        return any(_has_nan(v) for v in o.values())
+    if isinstance(o, (list, tuple)):
+        return any(_has_nan(v) for v in o)
+    return False
 
-                        pub_time = content.get("pubDate") or n.get("providerPublishTime", 0)
-                        hours_ago = 24.0
-                        if isinstance(pub_time, (int, float)) and pub_time > 0:
-                            dt = datetime.datetime.fromtimestamp(pub_time, tz=timezone.utc)
-                            hours_ago = (now - dt).total_seconds() / 3600
-                        elif isinstance(pub_time, str):
-                            try:
-                                dt = email.utils.parsedate_to_datetime(pub_time)
-                                if dt.tzinfo is None:
-                                    dt = dt.replace(tzinfo=timezone.utc)
-                                hours_ago = (now - dt).total_seconds() / 3600
-                            except Exception:
-                                hours_ago = 24.0
 
-                        articles.append({"title": title, "link": link, "source": source, "hours_ago": hours_ago})
-                except Exception as e:
-                    print(f"[News API] yfinance error for {ticker}: {e}")
-
-            final_articles = []
-            seen_titles = set()
-            for a in articles:
-                if not a.get("title"):
-                    continue
-                if a["title"] in seen_titles:
-                    continue
-                seen_titles.add(a["title"])
-
-                h = a.get("hours_ago", 48)
-                if h <= 24:
-                    a["category"] = "Last 24 Hours"
-                elif h <= 168:
-                    a["category"] = "Past 7 Days"
-                elif h <= 720:
-                    a["category"] = "Past 30 Days"
-                else:
-                    continue
-
-                final_articles.append(a)
-
-            # Semantic deduplication (fastembed MiniLM + guards + multi-source attribution)
-            try:
-                from news_dedup import dedupe_articles
-                final_articles = dedupe_articles(final_articles, window_h=24)
-            except Exception as e:
-                print(f"[News API] Deduplication error: {e}")
-
-            final_articles.sort(key=lambda x: x["hours_ago"])
-            payload = json.dumps(final_articles).encode('utf-8')
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.send_header('Content-length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-            return
-            
-        elif url.path.startswith("/upstox-api/"):
-            if not state.UPSTOX_TOKEN:
-                self.send_response(401)
-                self.end_headers()
-                self.wfile.write(b'{"error": "Missing Upstox Token"}')
-                return
-                
-            upstream_path = url.path.replace("/upstox-api", "")
-            target_url = "https://api.upstox.com" + upstream_path
-            if url.query:
-                target_url += "?" + url.query
-                
-            headers = {'Authorization': f'Bearer {state.UPSTOX_TOKEN}', 'Accept': 'application/json', 'Api-Version': '2.0'}
-            try:
-                resp = requests.get(target_url, headers=headers, timeout=10)
-                self.send_response(resp.status_code)
-                for k, v in resp.headers.items():
-                    if k.lower() not in ['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'access-control-allow-origin', 'authorization']:
-                        self.send_header(k, v)
-                self.end_headers()
-                self.wfile.write(resp.content)
-            except Exception as e:
-                self.send_response(502)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-            return
-            
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"404 Not Found")
-
-    def log_message(self, format, *args): pass
+def _nan_to_none(o):
+    if isinstance(o, float) and (o != o or o in (float("inf"), float("-inf"))):
+        return None
+    if isinstance(o, dict):
+        return {k: _nan_to_none(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_nan_to_none(v) for v in o]
+    return o
