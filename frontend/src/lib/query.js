@@ -48,7 +48,9 @@ export function evaluateCondition(row, condition) {
     'change': 'changePct',
     'rsi': 'rsi',
     'signal': 'signal',
-    'sentiment': 'nlpSentiment',
+    'relvol': 'relVol',
+    'fund': 'fundamentalScore',
+    'score': 'signalScore',
     'volume': 'volume'
   };
   

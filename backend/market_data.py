@@ -230,6 +230,7 @@ SECTOR_INDEX = {
     "construction materials": "Nifty Infra",
     "capital goods": "Nifty Infra",
     "telecommunication": "Nifty Infra",
+    "utilities": "Nifty Energy",
     "consumer services": "Nifty FMCG",
     "consumer durables": "Nifty FMCG",
 }
@@ -269,6 +270,36 @@ def sector_index_for(*industries):
 
 def index_candles(name, days=600):
     return fetch_candles(f"NSE_INDEX|{name}", days)
+
+
+def sector_performance():
+    """Returns of each mapped sector index over 1/5/20/60 sessions, absolute and vs Nifty 500.
+
+    Daily candles only, so figures are as of the last close. Live intraday moves come from quotes.
+    """
+    def rets(df):
+        c = df["c"]
+        out = {}
+        for k in (1, 5, 20, 60):
+            out[f"ret_{k}d"] = float(c.iloc[-1] / c.iloc[-1 - k] - 1) if len(c) > k else None
+        out["above_50dma"] = bool(c.iloc[-1] > c.tail(50).mean()) if len(c) >= 50 else None
+        out["as_of"] = c.index[-1].strftime("%Y-%m-%d")
+        return out
+
+    mkt = index_candles(MARKET_INDEX, 200)
+    m = rets(mkt) if mkt is not None and len(mkt) > 60 else {}
+    indices = {}
+    for name in sorted(set(SECTOR_INDEX.values())):
+        df = index_candles(name, 200)
+        if df is None or len(df) < 61:
+            continue
+        r = rets(df)
+        for k in (1, 5, 20, 60):
+            a, b = r.get(f"ret_{k}d"), m.get(f"ret_{k}d")
+            r[f"rel_{k}d"] = a - b if a is not None and b is not None else None
+        indices[name] = r
+    sectors = {s: idx for s, idx in SECTOR_INDEX.items()}
+    return {"market": {"index": MARKET_INDEX, **m}, "indices": indices, "sector_to_index": sectors}
 
 
 # ── delivery data (NSE full bhavcopy) ──────────────────────────────────────

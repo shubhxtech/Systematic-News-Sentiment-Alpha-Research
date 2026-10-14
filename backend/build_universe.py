@@ -1,56 +1,69 @@
-import urllib.request
-import gzip
-import json
+"""Build frontend/src/lib/universe.json from NSE's index constituent lists.
+
+The screener universe is Nifty Total Market: Nifty 500 + Nifty Microcap 250 (about 750 stocks).
+Each stock gets its NSE sector and a size bucket taken from the index it belongs to:
+
+    Large = Nifty 100, Mid = Midcap 150, Small = Smallcap 250, Micro = Microcap 250
+
+Run it whenever NSE rebalances its indices (March and September):
+
+    cd backend && python3 build_universe.py
+"""
 import csv
 import io
+import json
+import sys
+from pathlib import Path
 
-print("Downloading NSE EQUITY_L (Official list of actual companies)...")
-req = urllib.request.Request("https://archives.nseindia.com/content/equities/EQUITY_L.csv", headers={'User-Agent': 'Mozilla/5.0'})
-nse_companies = {}
-try:
-    with urllib.request.urlopen(req) as response:
-        content = response.read().decode('utf-8')
-        reader = csv.reader(content.splitlines())
-        next(reader) # headers
-        for row in reader:
-            if len(row) > 6:
-                symbol = row[0].strip()
-                name = row[1].strip()
-                series = row[2].strip()
-                isin = row[6].strip()
-                if series in ['EQ', 'BE']:
-                    nse_companies[isin] = {"symbol": symbol, "name": name, "series": series}
-except Exception as e:
-    print("Failed NSE EQUITY_L:", e)
+import requests
 
-print(f"Loaded {len(nse_companies)} real companies. Downloading Upstox NSE.csv.gz...")
-req = urllib.request.Request("https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz", headers={'User-Agent': 'Mozilla/5.0'})
-universe = {}
-with urllib.request.urlopen(req) as response:
-    content = gzip.decompress(response.read()).decode('utf-8')
-    reader = csv.reader(content.splitlines())
-    headers = next(reader)
-    for row in reader:
-        if len(row) < 11: continue
-        instrument_key = row[0]
-        tradingsymbol = row[2]
-        instrument_type = row[9]
-        if instrument_type == 'EQUITY':
-            isin = instrument_key.split('|')[1] if '|' in instrument_key else ""
-            if isin in nse_companies:
-                comp = nse_companies[isin]
-                universe[tradingsymbol] = {
-                    "name": comp["name"],
-                    "sector": "Unknown",
-                    "isin": isin,
-                    "key": instrument_key
-                }
-                if len(universe) >= 2000:
-                    break
+OUT = Path(__file__).resolve().parents[1] / "frontend" / "src" / "lib" / "universe.json"
+BASE = "https://nsearchives.nseindia.com/content/indices/"
+UA = {"User-Agent": "Mozilla/5.0"}
 
-with open("screener/src/lib/universe_500.json", "w") as f:
-    json.dump(universe, f, indent=2)
+# Order matters: a stock takes the first bucket whose list contains it.
+BUCKETS = [
+    ("Large", "ind_nifty100list.csv"),
+    ("Mid", "ind_niftymidcap150list.csv"),
+    ("Small", "ind_niftysmallcap250list.csv"),
+    ("Micro", "ind_niftymicrocap250_list.csv"),
+]
 
-print(f"Saved {len(universe)} real stocks.")
 
-print(f"Saved {len(universe)} stocks.")
+def fetch(name):
+    r = requests.get(BASE + name, headers=UA, timeout=30)
+    r.raise_for_status()
+    rows = list(csv.DictReader(io.StringIO(r.text)))
+    if not rows or "ISIN Code" not in rows[0]:
+        raise ValueError(f"{name}: unexpected format")
+    return rows
+
+
+def main():
+    nifty50 = {r["Symbol"] for r in fetch("ind_nifty50list.csv")}
+    universe = {}
+    for bucket, name in BUCKETS:
+        rows = fetch(name)
+        print(f"{name}: {len(rows)} stocks")
+        for r in rows:
+            sym = r["Symbol"].strip()
+            if sym in universe:
+                continue
+            isin = r["ISIN Code"].strip()
+            universe[sym] = {
+                "name": r["Company Name"].strip(),
+                "sector": r["Industry"].strip() or "Other",
+                "cap": bucket,
+                "nifty50": sym in nifty50,
+                "isin": isin,
+                "key": f"NSE_EQ|{isin}",
+            }
+    if len(universe) < 700:
+        sys.exit(f"Only {len(universe)} stocks found; refusing to overwrite {OUT.name}")
+    OUT.write_text(json.dumps(dict(sorted(universe.items())), indent=1))
+    sectors = sorted({v["sector"] for v in universe.values()})
+    print(f"Wrote {len(universe)} stocks across {len(sectors)} sectors to {OUT}")
+
+
+if __name__ == "__main__":
+    main()

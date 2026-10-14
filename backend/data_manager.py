@@ -6,7 +6,6 @@ try:
 except ImportError:  # optional: the screener still runs, just without yfinance fundamentals
     yf = None
 import numpy as np
-from pathlib import Path
 
 TICKER_ALIASES = {
     # Banking
@@ -89,43 +88,6 @@ TICKER_ALIASES = {
     "AMBUJACEM":    ["Ambuja Cements"],
     "SHREECEM":     ["Shree Cement"],
 }
-
-def init_global_caches():
-    base_dir = Path(__file__).parent / "data"
-    base_dir.mkdir(exist_ok=True)
-    
-    start_bound = (pd.Timestamp.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
-    end_bound   = pd.Timestamp.now().strftime('%Y-%m-%d')
-    all_tix = [k + ".NS" for k in TICKER_ALIASES.keys() if not k.startswith("__")]
-    
-    cache_file = base_dir / "market_data_cache.csv"
-    
-    if not cache_file.exists() and yf is None:
-        print("yfinance not installed — skipping OHLC cache build.")
-        state.APP_STATE["yfinance_cache"] = pd.DataFrame()
-        return
-    if cache_file.exists():
-        print(f"Loading persistent OHLC cache from disk ({cache_file.name})...")
-        try:
-            raw_price_cache = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            state.APP_STATE["yfinance_cache"] = raw_price_cache
-            print(f"✅ Loaded {len(raw_price_cache.columns)} NSE tickers from disk cache.")
-        except Exception as e:
-            print(f"❌ Failed to load disk cache: {e}")
-            state.APP_STATE["yfinance_cache"] = pd.DataFrame()
-    else:
-        print("Pre-fetching OHLC market data for universe from network...")
-        try:
-            raw_price_cache = yf.download(list(set(all_tix)), start=start_bound, end=end_bound, progress=False, auto_adjust=True)["Close"]
-            if isinstance(raw_price_cache, pd.Series):
-                 raw_price_cache = raw_price_cache.to_frame(all_tix[0])
-            raw_price_cache = raw_price_cache.dropna(axis=1, how='all')
-            raw_price_cache.to_csv(cache_file)
-            state.APP_STATE["yfinance_cache"] = raw_price_cache
-            print(f"✅ Downloaded and cached structured price data to {cache_file.name}.")
-        except Exception as e:
-            print(f"❌ Failed to build OHLC price cache: {e}")
-            state.APP_STATE["yfinance_cache"] = pd.DataFrame()
 
 def _ok(v):
     try:
