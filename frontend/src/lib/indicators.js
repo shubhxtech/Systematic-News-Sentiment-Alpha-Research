@@ -19,12 +19,9 @@ export function sma(data, period) {
     if (count === period) {
       result[i] = sum / period;
     } else if (count > period) {
-      let prev = data[i - period];
-      while (prev == null && i - period >= 0) {
-        // Technically SMA skips nulls, but if data is contiguous:
-        prev = data[i - period];
-      }
-      sum -= (data[i - period] || 0); // simplistic assumption of contiguous data
+      // Assumes contiguous data (no nulls inside the window). The old version spun forever
+      // in a while-loop when data[i - period] was null.
+      sum -= (data[i - period] || 0);
       result[i] = sum / period;
     }
   }

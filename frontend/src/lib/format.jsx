@@ -95,3 +95,15 @@ export function RangeBar({ low, high, current }) {
     </div>
   );
 }
+
+const IST_MS = 5.5 * 3600 * 1000;
+/**
+ * Lightweight-charts time for a candle. It renders unix times as UTC, so daily bars (stamped at
+ * IST midnight) would land on the previous day and intraday bars would show UTC clock times.
+ * Daily → 'YYYY-MM-DD' (IST); intraday → unix seconds shifted so the axis reads IST.
+ */
+export function chartTime(dateStr, intraday = false) {
+  const ms = new Date(dateStr).getTime();
+  if (intraday) return Math.floor((ms + IST_MS) / 1000);
+  return new Date(ms + IST_MS).toISOString().slice(0, 10);
+}

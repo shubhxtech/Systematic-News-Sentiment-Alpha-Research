@@ -5,6 +5,12 @@ import universe500 from './universe_500.json';
 export const UNIVERSE = universe500;
 export const TICKERS = Object.keys(UNIVERSE);
 export const SECTORS = [...new Set(Object.values(UNIVERSE).map(s => s.sector))];
+/** instrument key ("NSE_EQ|INE...") → ticker, for mapping quote responses back */
+export const KEY_TO_TICKER = Object.fromEntries(TICKERS.map(t => [UNIVERSE[t].key, t]));
+
+/** YYYY-MM-DD in IST (Upstox dates are exchange dates; toISOString() is UTC). */
+const istDate = (msAgo = 0) =>
+  new Date(Date.now() - msAgo + 5.5 * 3600 * 1000).toISOString().split('T')[0];
 
 // ── Axios instance ─────────────────────────────────────────────────────────
 const upstox = axios.create({
@@ -27,25 +33,46 @@ function chunkArray(array, size) {
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
+/**
+ * Quotes for the universe. Returns { quotes, unauthorized } — unauthorized is true when every
+ * chunk was rejected with 401 (missing/expired token), so callers can tell the user.
+ */
 export async function getMarketQuotes(tickers = TICKERS) {
-  // Only fetch tickers that exist in universe
-  const knownTickers = tickers.filter(t => UNIVERSE[t]);
-  const keys = knownTickers.map(t => UNIVERSE[t]?.key).filter(Boolean);
+  const keys = tickers.filter(t => UNIVERSE[t]).map(t => UNIVERSE[t].key).filter(Boolean);
   const chunks = chunkArray(keys, 500);
 
-  const allQuotes = {};
-  for (const chunk of chunks) {
+  const quotes = {};
+  let rejected = 0;
+  for (let i = 0; i < chunks.length; i++) {
     try {
       const { data } = await upstox.get('/v3/market-quote/quotes', {
-        params: { instrument_key: chunk.join(',') }
+        params: { instrument_key: chunks[i].join(',') }
       });
-      if (data?.data) Object.assign(allQuotes, data.data);
+      if (data?.data) Object.assign(quotes, data.data);
     } catch (e) {
-      console.error('Quotes chunk failed', e?.response?.status || e.message);
+      const status = e?.response?.status;
+      if (status === 401) rejected++;
+      console.error('Quotes chunk failed', status || e.message);
+      if (status === 401 && rejected === 1 && i === 0) break; // no point hammering with a bad token
     }
-    await new Promise(r => setTimeout(r, 1200));
+    if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 1200));
   }
-  return allQuotes;
+  return { quotes, unauthorized: rejected > 0 && Object.keys(quotes).length === 0 };
+}
+
+/** Resolve any NSE symbol to its instrument via the backend's instrument master. */
+const instrumentCache = {};
+export async function resolveInstrument(ticker) {
+  const t = ticker.toUpperCase();
+  if (UNIVERSE[t]?.key) return { key: UNIVERSE[t].key, name: UNIVERSE[t].name, symbol: t };
+  if (!instrumentCache[t]) {
+    instrumentCache[t] = fetch(`/api/instrument?symbol=${encodeURIComponent(t)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null);
+  }
+  const info = await instrumentCache[t];
+  if (!info) delete instrumentCache[t]; // allow a retry later
+  return info;
 }
 
 /**
@@ -54,29 +81,13 @@ export async function getMarketQuotes(tickers = TICKERS) {
  * and custom tickers (derives the NSE_EQ key from symbol name).
  */
 export async function getHistoricalCandles(ticker) {
-  // Try to get key from universe, fall back to constructing NSE_EQ key
-  let key = UNIVERSE[ticker]?.key;
-  if (!key) {
-    // For custom tickers, search Upstox instrument list
-    try {
-      const { data } = await upstox.get('/v2/market/instruments', {
-        params: { segment: 'NSE_EQ' }
-      });
-      const instruments = data?.data || [];
-      const match = instruments.find(i =>
-        i.tradingsymbol?.toUpperCase() === ticker.toUpperCase()
-      );
-      if (match) key = match.instrument_key;
-    } catch {
-      // fallback: construct key directly (works for most NSE stocks)
-      key = `NSE_EQ|${ticker.toUpperCase()}`;
-    }
-  }
+  // Universe tickers carry their key; anything else is resolved by ISIN on the backend.
+  const info = await resolveInstrument(ticker);
+  const key = info?.key;
+  if (!key) throw new Error(`Unknown symbol: ${ticker}`);
 
-  if (!key) throw new Error(`Cannot resolve instrument key for: ${ticker}`);
-
-  const today = new Date().toISOString().split('T')[0];
-  const dayFrom = new Date(Date.now() - 365 * 86400000).toISOString().split('T')[0]; // 1 year
+  const today = istDate();
+  const dayFrom = istDate(400 * 86400000); // ~13 months: enough for 52-week stats and EMA200
 
   const dayRes = await upstox.get(
     `/v2/historical-candle/${encodeURIComponent(key)}/day/${today}/${dayFrom}`
@@ -84,7 +95,7 @@ export async function getHistoricalCandles(ticker) {
 
   await new Promise(r => setTimeout(r, 100));
 
-  const minFrom = new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0];
+  const minFrom = istDate(3 * 86400000);
   const minRes = await upstox.get(
     `/v2/historical-candle/${encodeURIComponent(key)}/1minute/${today}/${minFrom}`
   ).catch(() => ({ data: {} }));
@@ -124,7 +135,7 @@ export async function getHistoricalCandles(ticker) {
     todaysIntraday = intraday.filter(c => new Date(c.date).getDate() === lastDate);
   }
 
-  return { daily, intraday: todaysIntraday };
+  return { daily, intraday: todaysIntraday, name: info?.name, key };
 }
 
 export async function testConnection() {

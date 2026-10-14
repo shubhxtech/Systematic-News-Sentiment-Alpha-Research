@@ -108,16 +108,17 @@ export function timeUntilOpen() {
   const now = nowIST();
   const day = now.getUTCDay();
 
-  // Calculate next open day
-  let daysUntilOpen = 1;
-  if (day === 5) daysUntilOpen = 3; // Fri → Mon
-  if (day === 6) daysUntilOpen = 2; // Sat → Mon
-
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
   const totalMins = h * 60 + m;
 
-  if (daysUntilOpen === 1 && totalMins < 555) {
+  // Calendar days until the next weekday session (holidays are not modelled).
+  let daysUntilOpen = 1;
+  if (day === 5) daysUntilOpen = 3; // Fri → Mon
+  if (day === 6) daysUntilOpen = 2; // Sat → Mon
+  if (day === 0) daysUntilOpen = 1; // Sun → Mon
+
+  if (day >= 1 && day <= 5 && totalMins < 555) {
     // Today before 9:15 — open is today
     const minsLeft = 555 - totalMins;
     const hLeft = Math.floor(minsLeft / 60);

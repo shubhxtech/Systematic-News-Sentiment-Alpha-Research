@@ -1,304 +1,250 @@
 /**
  * useScreenerData.js
  *
- * Fetches real market data from Upstox.
+ * Fetches real market data from Upstox (via the backend proxy).
  * If no API token is configured, sets needsApiToken=true and stops.
  * No synthetic / random data is ever generated.
+ *
+ * useScreenerPolling() owns the poll loop and must be mounted exactly once (App).
+ * useScreenerData() only returns actions, so any component can call it without
+ * starting a second loop.
  */
 import { useEffect, useCallback } from 'react';
 import { useStore } from '../lib/store';
 import {
-  TICKERS, UNIVERSE,
+  UNIVERSE, KEY_TO_TICKER,
   getMarketQuotes, getHistoricalCandles,
 } from '../lib/upstoxApi';
 import { computeSignal } from '../lib/signal';
 import {
-  isMarketOpen, getMarketStatus, getPollInterval, shouldSkipLiveQuotes, timeUntilOpen,
+  getMarketStatus, getPollInterval, shouldSkipLiveQuotes, timeUntilOpen,
 } from '../lib/marketHours';
 
-// ── Hook ───────────────────────────────────────────────────────────────────
-export function useScreenerData() {
-  const {
-    apiToken,
-    setScreenerData,
-    updateTicker,
-    setCandleCache,
-    candleCache,
-    setMarketOpen,
-    setLastUpdated,
-    setLoading,
-    setNeedsApiToken,
-    watchlist,
-  } = useStore();
+const maxOf = (arr, k) => arr.reduce((m, c) => (c[k] > m ? c[k] : m), -Infinity);
+const minOf = (arr, k) => arr.reduce((m, c) => (c[k] < m ? c[k] : m), Infinity);
 
-  // ── Main screener poll (live data only) ────────────────────────────────────
-  const poll = useCallback(async () => {
-    if (!apiToken) {
-      setNeedsApiToken(true);
+function tickerForQuote(key, q) {
+  return KEY_TO_TICKER[q?.instrument_token] || KEY_TO_TICKER[key] || q?.symbol || key.split(':')[1];
+}
+
+async function fetchFundamentals() {
+  try {
+    const res = await fetch('/api/fundamentals');
+    if (res.ok) return (await res.json()).stocks || {};
+  } catch (e) {
+    console.warn('Fundamentals fetch failed', e);
+  }
+  return {};
+}
+
+/** Signal fields derived from daily candles (empty object when history is too short). */
+function signalFields(daily, fundScore) {
+  if (!daily || daily.length < 50) return null;
+  const { score, signal, breakdown, indicators, warning } = computeSignal(daily, { fundamentalScore: fundScore });
+  const last252 = daily.slice(-252);
+  return {
+    signalScore: score, signal, breakdown, signalWarning: warning,
+    ...indicators,
+    rsi: indicators?.rsiVal,
+    adx: indicators?.adxVal,
+    week52High: maxOf(last252, 'high'),
+    week52Low: minOf(last252, 'low'),
+  };
+}
+
+// One background history loader for the whole app.
+let historyLoopRunning = false;
+
+async function loadMissingHistory(tickers) {
+  if (historyLoopRunning) return;
+  historyLoopRunning = true;
+  try {
+    for (const ticker of tickers) {
+      const st = useStore.getState();
+      if (!st.apiToken) break;
+      if (st.candleCache[ticker]) continue;
+      const result = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+      if (result.daily.length || result.intraday.length) {
+        st.setCandleCache(ticker, result);
+        const fundScore = st.screenerData[ticker]?.fundamentalScore ?? null;
+        const sig = signalFields(result.daily, fundScore);
+        if (sig) st.updateTicker(ticker, sig);
+      }
+      await new Promise(r => setTimeout(r, 1200));
+    }
+  } finally {
+    historyLoopRunning = false;
+  }
+}
+
+// ── Actions (no side-effects on mount) ─────────────────────────────────────
+export function useScreenerData() {
+  const apiToken = useStore(s => s.apiToken);
+
+  const poll = useCallback(async ({ force = false } = {}) => {
+    const st = useStore.getState();
+    if (!st.apiToken) {
+      st.setNeedsApiToken(true);
       return;
     }
-    setNeedsApiToken(false);
+    st.setNeedsApiToken(false);
 
     const marketStatus = getMarketStatus();
-    const skipLive = shouldSkipLiveQuotes();
-    setMarketOpen(marketStatus === 'open');
+    st.setMarketOpen(marketStatus === 'open');
+    const haveData = Object.keys(st.screenerData).length > 0;
 
-    // ── When market is closed: skip live quotes, just recompute signals ───────
-    if (skipLive) {
-      // Only show loading on the first call (when store is empty)
-      const { screenerData } = useStore.getState();
-      if (Object.keys(screenerData).length === 0) {
-        setLoading('screener', true);
+    // Outside market hours prices do not change. Fetch once (so the screener is never empty
+    // after a reload at night or on a weekend), then only refresh fundamentals/signals.
+    if (shouldSkipLiveQuotes() && haveData && !force) {
+      const fundData = await fetchFundamentals();
+      const { screenerData, candleCache, updateTicker } = useStore.getState();
+      for (const [ticker, prev] of Object.entries(screenerData)) {
+        const fundScore = fundData[ticker + '.NS']?.score ?? null;
+        const sig = signalFields(candleCache[ticker]?.daily, fundScore);
+        updateTicker(ticker, {
+          ...(sig || {}),
+          fundamentalScore: fundScore,
+          fundamentals: fundData[ticker + '.NS'] || prev.fundamentals || null,
+        });
       }
-
-      try {
-        const res = await fetch('/api/fundamentals');
-        if (res.ok) {
-          const parsed = await res.json();
-          const fundData = parsed.stocks || {};
-          // Recompute signals with latest fundamentals but keep last prices
-          const { screenerData } = useStore.getState();
-          for (const [ticker, prev] of Object.entries(screenerData)) {
-            const candles = candleCache[ticker];
-            if (!candles?.daily?.length || candles.daily.length < 50) continue;
-            const fundScore = fundData[ticker + '.NS']?.score ?? null;
-            const { score, signal, breakdown, indicators, warning } =
-              computeSignal(candles.daily, { fundamentalScore: fundScore });
-            updateTicker(ticker, {
-              signalScore: score, signal, breakdown,
-              signalWarning: warning,
-              rsi: indicators?.rsiVal,
-              fundamentalScore: fundScore,
-              fundamentals: fundData[ticker + '.NS'] || prev.fundamentals || null,
-            });
-          }
-        }
-      } catch (e) { console.warn('Fundamentals fetch failed (closed market)', e); }
-
       const timeLeft = timeUntilOpen();
-      setLastUpdated(`Closed${timeLeft ? ` · opens in ${timeLeft}` : ''}`);
-      setLoading('screener', false);
+      st.setLastUpdated(`Closed${timeLeft ? ` · opens in ${timeLeft}` : ''}`);
       return;
     }
 
-    // ── Market is open: full live fetch ──────────────────────────────────────
-    setLoading('screener', true);
+    st.setLoading('screener', true);
     try {
-      const quotes = await getMarketQuotes();
-      const keys   = Object.keys(quotes);
-
-      let fundData = {};
-      try {
-        const res = await fetch('/api/fundamentals');
-        if (res.ok) {
-          const parsed = await res.json();
-          fundData = parsed.stocks || {};
-        }
-      } catch (e) {
-        console.error("Failed to fetch fundamentals", e);
+      const [{ quotes, unauthorized }, fundData] = await Promise.all([getMarketQuotes(), fetchFundamentals()]);
+      if (unauthorized) {
+        st.setError('Upstox token rejected or expired — update it in Settings');
+        return;
       }
+      st.setError(null);
+      const keys = Object.keys(quotes);
 
-      setScreenerData(prevData => {
+      st.setScreenerData(prevData => {
         const data = { ...prevData };
+        const { candleCache } = useStore.getState();
         for (const k of keys) {
-          const q      = quotes[k];
-          const ticker = q.symbol
-            || TICKERS.find(t => UNIVERSE[t]?.key === k)
-            || k.split(':')[1];
+          const q = quotes[k];
+          const ticker = tickerForQuote(k, q);
           if (!ticker || !UNIVERSE[ticker]) continue;
 
-          const prev    = data[ticker] || {};
-          const candles = candleCache[ticker];
-          const avgVol  = candles?.daily?.length
-            ? candles.daily.slice(-20).reduce((a, c) => a + c.volume, 0) / 20 || 1
+          const prev = data[ticker] || {};
+          const daily = candleCache[ticker]?.daily;
+          const avgVol = daily?.length >= 20
+            ? (daily.slice(-20).reduce((a, c) => a + c.volume, 0) / 20) || null
             : null;
-          
           const fundScore = fundData[ticker + '.NS']?.score ?? null;
-
-          // Only compute signals when we have candle history
-          let signalData = {};
-          if (candles?.daily?.length >= 50) {
-            const { score, signal, breakdown, indicators, warning } =
-              computeSignal(candles.daily, { fundamentalScore: fundScore });
-            signalData = {
-              signalScore:   score,
-              signal:        signal,
-              breakdown,
-              signalWarning: warning,
-              ...indicators,
-              rsi:    indicators?.rsiVal,
-            };
-          } else {
-            // Keep old signal data if we had it; else null
-            signalData = {
-              signalScore:  prev.signalScore  ?? null,
-              signal:       prev.signal       ?? null,
-              breakdown:    prev.breakdown    ?? {},
-              signalWarning: 'Price history not yet loaded',
-            };
-          }
+          const sig = signalFields(daily, fundScore) || {
+            signalScore: prev.signalScore ?? null,
+            signal: prev.signal ?? null,
+            breakdown: prev.breakdown ?? {},
+            signalWarning: prev.signalWarning || 'Price history not yet loaded',
+          };
+          const prevClose = q.prev_close_price || q.ohlc?.close;
+          const changePct = q.net_change_percentage
+            ?? (q.net_change != null && prevClose ? (q.net_change / (q.last_price - q.net_change)) * 100 : null)
+            ?? (prevClose ? ((q.last_price - prevClose) / prevClose) * 100 : null);
 
           data[ticker] = {
+            ...prev,
             ticker,
             ...UNIVERSE[ticker],
-            ...signalData,
-            ltp:        q.last_price,
-            open:       q.ohlc?.open,
-            high:       q.ohlc?.high,
-            low:        q.ohlc?.low,
-            changePct:  q.net_change_percentage
-              ?? ((q.last_price - (q.prev_close_price || q.ohlc?.close))
-                  / (q.prev_close_price || q.ohlc?.close)) * 100,
-            volume:     q.volume,
-            avgVolume:  avgVol,
+            ...sig,
+            ltp: q.last_price,
+            open: q.ohlc?.open,
+            high: q.ohlc?.high,
+            low: q.ohlc?.low,
+            changePct,
+            volume: q.volume,
+            avgVolume: avgVol,
             fundamentalScore: fundScore,
             fundamentals: fundData[ticker + '.NS'] || null,
-            week52High: q['52_week_high']
-              ?? (candles?.daily ? Math.max(...candles.daily.slice(-252).map(c => c.high)) : null),
-            week52Low:  q['52_week_low']
-              ?? (candles?.daily ? Math.min(...candles.daily.slice(-252).map(c => c.low)) : null),
+            week52High: q['52_week_high'] ?? sig.week52High ?? prev.week52High ?? null,
+            week52Low: q['52_week_low'] ?? sig.week52Low ?? prev.week52Low ?? null,
           };
         }
         return data;
       });
 
-      // Background history fetch — only run when market open (data will be fresh)
-      if (!window.__isFetchingHistory && isMarketOpen()) {
-        window.__isFetchingHistory = true;
-        (async () => {
-          try {
-            for (const k of keys) {
-              const q      = quotes[k];
-              const ticker = q.symbol
-                || TICKERS.find(t => UNIVERSE[t]?.key === k)
-                || k.split(':')[1];
-              if (!ticker || !UNIVERSE[ticker] || candleCache[ticker]) continue;
-              const result = await getHistoricalCandles(ticker)
-                .catch(() => ({ daily: [], intraday: [] }));
-              if (result.daily.length || result.intraday.length) {
-                setCandleCache(ticker, result);
-                // Recompute signal now that we have candles
-                if (result.daily.length >= 50) {
-                  const { score, signal, breakdown, indicators, warning } =
-                    computeSignal(result.daily, { fundamentalScore: null });
-                  updateTicker(ticker, {
-                    signalScore:   score,
-                    signal,
-                    breakdown,
-                    signalWarning: warning,
-                    rsi:    indicators?.rsiVal,
-                    ema21:  indicators?.ema21,
-                    ema50:  indicators?.ema50,
-                    adx:    indicators?.adxVal,
-                    bbUp:   indicators?.bbUp,
-                    bbLow:  indicators?.bbLow,
-                    stTrend: indicators?.stTrend,
-                    week52High: Math.max(...result.daily.slice(-252).map(c => c.high)),
-                    week52Low:  Math.min(...result.daily.slice(-252).map(c => c.low)),
-                  });
-                }
-              }
-              await new Promise(r => setTimeout(r, 1200));
-            }
-          } finally {
-            window.__isFetchingHistory = false;
-          }
-        })();
-      }
+      // Candle history for signals loads slowly in the background (rate limits).
+      loadMissingHistory(keys.map(k => tickerForQuote(k, quotes[k])).filter(t => t && UNIVERSE[t]));
 
-      setLastUpdated(new Date().toLocaleTimeString('en-IN'));
+      st.setLastUpdated(new Date().toLocaleTimeString('en-IN'));
     } catch (err) {
       console.error('[screener poll]', err);
+      st.setError(err?.message || 'Quote fetch failed');
     } finally {
-      setLoading('screener', false);
+      st.setLoading('screener', false);
     }
-  }, [apiToken, candleCache, setCandleCache, setLastUpdated, setLoading, setMarketOpen, setNeedsApiToken, setScreenerData, updateTicker]);
+  }, []);
 
   // ── Watchlist ticker fetch (live only, no random fallback) ─────────────────
   const fetchWatchlistTicker = useCallback(async (ticker, force = false) => {
-    if (!apiToken) {
-      setNeedsApiToken(true);
+    const st = useStore.getState();
+    if (!st.apiToken) {
+      st.setNeedsApiToken(true);
       return;
     }
-    if (!force && candleCache[ticker]?.daily?.length) return;
+    if (!force && st.candleCache[ticker]?.daily?.length) return;
 
     try {
-      setLoading('candles', true);
-      const candles = await getHistoricalCandles(ticker)
-        .catch(() => ({ daily: [], intraday: [] }));
-
-      if (candles.daily.length >= 50) {
-        setCandleCache(ticker, candles);
-        const { score, signal, breakdown, indicators, warning } =
-          computeSignal(candles.daily, { fundamentalScore: null });
+      st.setLoading('candles', true);
+      const candles = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
+      const sig = signalFields(candles.daily, st.screenerData[ticker]?.fundamentalScore ?? null);
+      if (sig) {
+        st.setCandleCache(ticker, candles);
         const last = candles.daily[candles.daily.length - 1];
         const prev = candles.daily[candles.daily.length - 2];
-        const changePct = prev ? ((last.close - prev.close) / prev.close) * 100 : null;
-        updateTicker(ticker, {
+        const existing = useStore.getState().screenerData[ticker];
+        st.updateTicker(ticker, {
           ticker,
-          name:    UNIVERSE[ticker]?.name    || ticker,
-          sector:  UNIVERSE[ticker]?.sector  || '–',
-          signalScore:   score,
-          signal,
-          breakdown,
-          signalWarning: warning,
-          rsi:    indicators?.rsiVal,
-          ema21:  indicators?.ema21,
-          ema50:  indicators?.ema50,
-          adx:    indicators?.adxVal,
-          bbUp:   indicators?.bbUp,
-          bbLow:  indicators?.bbLow,
-          stTrend: indicators?.stTrend,
-          ltp:       last?.close,
-          changePct,
-          week52High: Math.max(...candles.daily.slice(-252).map(c => c.high)),
-          week52Low:  Math.min(...candles.daily.slice(-252).map(c => c.low)),
+          name: UNIVERSE[ticker]?.name || candles.name || ticker,
+          sector: UNIVERSE[ticker]?.sector || '–',
+          ...sig,
+          // keep a live quote if the screener already has one
+          ltp: existing?.ltp ?? last?.close,
+          changePct: existing?.changePct ?? (prev ? ((last.close - prev.close) / prev.close) * 100 : null),
         });
       } else {
-        // Not enough history — mark it so the UI can show a warning
-        updateTicker(ticker, {
+        st.updateTicker(ticker, {
           ticker,
-          name:    UNIVERSE[ticker]?.name || ticker,
-          sector:  UNIVERSE[ticker]?.sector || '–',
+          name: UNIVERSE[ticker]?.name || ticker,
+          sector: UNIVERSE[ticker]?.sector || '–',
           signalWarning: 'Insufficient price history returned from API',
         });
       }
     } catch (e) {
       console.error('[watchlist fetch]', ticker, e);
     } finally {
-      setLoading('candles', false);
+      useStore.getState().setLoading('candles', false);
     }
-  }, [apiToken, candleCache, setCandleCache, setLoading, setNeedsApiToken, updateTicker]);
+  }, []);
 
-  // ── Poll loop — interval adapts to market hours ────────────────────────────
+  return { pollOnce: () => poll({ force: true }), poll, fetchWatchlistTicker, apiToken };
+}
+
+// ── Poll loop — mount once ─────────────────────────────────────────────────
+export function useScreenerPolling() {
+  const apiToken = useStore(s => s.apiToken);
+  const watchlist = useStore(s => s.watchlist);
+  const { poll, fetchWatchlistTicker } = useScreenerData();
+
   useEffect(() => {
     let timerId;
-    let isUnmounted = false;
-
-    const runPoll = async () => {
-      if (isUnmounted) return;
+    let stopped = false;
+    const run = async () => {
+      if (stopped) return;
       await poll();
-      if (!isUnmounted && apiToken) {
-        // Use market-aware interval: 30s during live, much longer when closed
-        const interval = getPollInterval();
-        timerId = setTimeout(runPoll, interval);
-      }
+      if (!stopped && useStore.getState().apiToken) timerId = setTimeout(run, getPollInterval());
     };
-    runPoll();
-
-    return () => {
-      isUnmounted = true;
-      clearTimeout(timerId);
-    };
+    run();
+    return () => { stopped = true; clearTimeout(timerId); };
   }, [poll, apiToken]);
 
-  // ── Fetch all watchlist tickers when watchlist changes ─────────────────────
   useEffect(() => {
     if (!apiToken) return;
-    for (const ticker of watchlist) {
-      fetchWatchlistTicker(ticker);
-    }
-  }, [watchlist, apiToken]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return { pollOnce: poll, fetchWatchlistTicker };
+    for (const ticker of watchlist) fetchWatchlistTicker(ticker);
+  }, [watchlist, apiToken, fetchWatchlistTicker]);
 }

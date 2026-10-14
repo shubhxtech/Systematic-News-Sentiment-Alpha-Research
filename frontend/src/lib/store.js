@@ -3,32 +3,55 @@
  */
 import { create } from 'zustand';
 
-const savedWatchlist = JSON.parse(localStorage.getItem('sc_watchlist') || '[]');
-const savedAlerts    = JSON.parse(localStorage.getItem('sc_alerts')    || '[]');
-const savedPortfolio = JSON.parse(localStorage.getItem('sc_portfolio') || '{}');
+// A corrupt or blocked localStorage entry must not crash the whole app on load.
+function load(key, fallback) {
+  try {
+    const v = JSON.parse(localStorage.getItem(key));
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value)); } catch { /* quota / private mode */ }
+}
+function read(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+const savedWatchlist = Array.isArray(load('sc_watchlist', [])) ? load('sc_watchlist', []) : [];
+const savedAlerts    = Array.isArray(load('sc_alerts', [])) ? load('sc_alerts', []) : [];
+const savedPortfolio = load('sc_portfolio', {});
+
+// The real token lives only on the backend. The browser keeps a marker so the UI knows one is set.
+// Older versions stored the JWT itself here; replace it with the marker.
+const TOKEN_MARKER = 'backend';
+if (read('upstox_token') && read('upstox_token') !== TOKEN_MARKER) save('upstox_token', TOKEN_MARKER);
 
 export const useStore = create((set, get) => ({
   // ── Auth ──────────────────────────────────────────────────────────────────
-  apiToken: localStorage.getItem('upstox_token') || '',
-  setApiToken: (token) => {
-    localStorage.setItem('upstox_token', token);
-    set({ apiToken: token });
+  apiToken: read('upstox_token') || '',
+  /** Pass a truthy value when the backend has a token, '' when it does not. */
+  setApiToken: (hasToken) => {
+    const v = hasToken ? TOKEN_MARKER : '';
+    save('upstox_token', v);
+    set({ apiToken: v, needsApiToken: !v });
   },
 
   // ── Telegram Config ───────────────────────────────────────────────────────
-  telegramBotToken: localStorage.getItem('tg_bot_token') || '',
-  telegramChatId:   localStorage.getItem('tg_chat_id')   || '',
+  telegramBotToken: read('tg_bot_token') || '',
+  telegramChatId:   read('tg_chat_id')   || '',
   setTelegramConfig: (botToken, chatId) => {
-    localStorage.setItem('tg_bot_token', botToken);
-    localStorage.setItem('tg_chat_id', chatId);
+    save('tg_bot_token', botToken);
+    save('tg_chat_id', chatId);
     set({ telegramBotToken: botToken, telegramChatId: chatId });
   },
 
   // ── UI ────────────────────────────────────────────────────────────────────
-  theme: localStorage.getItem('sc_theme') || 'light',
+  theme: read('sc_theme') || 'light',
   toggleTheme: () => set(s => {
     const next = s.theme === 'light' ? 'dark' : 'light';
-    localStorage.setItem('sc_theme', next);
+    save('sc_theme', next);
     if (next === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
     else document.documentElement.removeAttribute('data-theme');
     return { theme: next };
@@ -47,7 +70,7 @@ export const useStore = create((set, get) => ({
   setError: (e) => set({ error: e }),
 
   // Whether the app is waiting for an API token to be configured
-  needsApiToken: !localStorage.getItem('upstox_token'),
+  needsApiToken: !read('upstox_token'),
   setNeedsApiToken: (v) => set({ needsApiToken: v }),
 
   // ── Market ────────────────────────────────────────────────────────────────
@@ -76,21 +99,22 @@ export const useStore = create((set, get) => ({
   // ── Watchlist ─────────────────────────────────────────────────────────────
   watchlist: savedWatchlist,
   addToWatchlist: (ticker) => set(s => {
-    if (s.watchlist.includes(ticker)) return {};
-    const next = [...s.watchlist, ticker.toUpperCase().trim()];
-    localStorage.setItem('sc_watchlist', JSON.stringify(next));
+    const t = ticker.toUpperCase().trim();
+    if (!t || s.watchlist.includes(t)) return {};
+    const next = [...s.watchlist, t];
+    save('sc_watchlist', next);
     return { watchlist: next };
   }),
   removeFromWatchlist: (ticker) => set(s => {
     const next = s.watchlist.filter(t => t !== ticker);
-    localStorage.setItem('sc_watchlist', JSON.stringify(next));
+    save('sc_watchlist', next);
     return { watchlist: next };
   }),
   toggleWatchlist: (ticker) => set(s => {
     const next = s.watchlist.includes(ticker)
       ? s.watchlist.filter(t => t !== ticker)
       : [...s.watchlist, ticker];
-    localStorage.setItem('sc_watchlist', JSON.stringify(next));
+    save('sc_watchlist', next);
     return { watchlist: next };
   }),
 
@@ -98,17 +122,20 @@ export const useStore = create((set, get) => ({
   alerts: savedAlerts,
   addAlert: (alert) => set(s => {
     const next = [...s.alerts, alert];
-    localStorage.setItem('sc_alerts', JSON.stringify(next));
+    save('sc_alerts', next);
     return { alerts: next };
   }),
   removeAlert: (id) => set(s => {
     const next = s.alerts.filter(a => a.id !== id);
-    localStorage.setItem('sc_alerts', JSON.stringify(next));
+    save('sc_alerts', next);
     return { alerts: next };
   }),
-  triggerAlert: (id) => set(s => ({
-    alerts: s.alerts.map(a => a.id === id ? { ...a, triggered: true, triggeredAt: new Date().toISOString() } : a)
-  })),
+  triggerAlert: (id) => set(s => {
+    // persisted, so a reload does not fire the same alert again
+    const next = s.alerts.map(a => a.id === id ? { ...a, triggered: true, triggeredAt: new Date().toISOString() } : a);
+    save('sc_alerts', next);
+    return { alerts: next };
+  }),
 
   // ── Portfolio ─────────────────────────────────────────────────────────────
   portfolio: savedPortfolio,
@@ -119,7 +146,7 @@ export const useStore = create((set, get) => ({
     } else {
       next[ticker] = { qty: Number(data.qty), buyPrice: Number(data.buyPrice) };
     }
-    localStorage.setItem('sc_portfolio', JSON.stringify(next));
+    save('sc_portfolio', next);
     return { portfolio: next };
   }),
 
