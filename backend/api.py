@@ -66,6 +66,35 @@ def _profile_for(symbol=None, isin=None, bse=None):
     return out
 
 
+_master_cache = {"mtime": None, "scores": {}}
+
+
+def _master_scores():
+    """{NSE symbol: {name, score, ...}} from fundamentals_master.csv, recomputed when the file changes."""
+    try:
+        mtime = earnings.MASTER_CSV.stat().st_mtime
+    except OSError:
+        return {}
+    if _master_cache["mtime"] != mtime:
+        out = {}
+        for _, f in earnings.load_master().iterrows():
+            sym = f.get("NSE Code")
+            if not isinstance(sym, str) or not sym.strip():
+                continue
+            score = earnings.fundamental_score(f.to_dict(), include_liquidity=False)
+            if score is None:
+                continue
+            out[sym.strip().upper()] = {
+                "name": f.get("Name"), "score": round(score, 1), "source": "fundamentals CSV",
+                "pe": earnings._num(f.get("Price to Earning")), "roce": earnings._num(f.get("Return on capital employed")),
+                "debt_equity": earnings._num(f.get("Debt to equity")),
+                "profit_growth_yoy": earnings._num(f.get("YOY Quarterly profit growth")),
+                "sales_growth_yoy": earnings._num(f.get("YOY Quarterly sales growth")),
+            }
+        _master_cache.update(mtime=mtime, scores=out)
+    return _master_cache["scores"]
+
+
 def _title(name):
     n = name.strip().rstrip(".")
     return n.title() if n.isupper() else n
@@ -184,18 +213,6 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
             days, top_k = min(max(days, 3), 60), min(max(top_k, 5), 200)
             return self._json({"job_id": premomentum.start(days, top_k)})
 
-        if path in ("/api/start-sim", "/api/stop-sim"):
-            return self._json({"status": "ok", "msg": "Backtesting removed"})
-
-        if path == "/api/set-fundamental-filter":
-            try:
-                with state.state_lock:
-                    if "min_score" in payload:
-                        state.APP_STATE["fundamental_min_score"] = int(payload["min_score"])
-                    return self._json({"status": "ok", "fundamental_min_score": state.APP_STATE["fundamental_min_score"]})
-            except (TypeError, ValueError) as e:
-                return self._err(str(e))
-
         if path == "/api/settings/upstox-token":
             token = payload.get("token", "")
             if not isinstance(token, str):
@@ -282,41 +299,20 @@ class LiveAPIHandler(BaseHTTPRequestHandler):
                 traceback.print_exc()  # classification is an enhancement; never fail the feed over it
             return self._json(articles)
 
-        # legacy / stub endpoints kept for older UI code
-        if path == "/api/sentiment/summary":
-            return self._json({})
-        if path.startswith("/api/sentiment/"):
-            return self._json({"series": []})
-        if path in ("/api/transcript-signals", "/api/insider-signals"):
-            return self._json([])
-        if path == "/api/regime-status":
-            return self._json({"current_regime": "N/A", "confidence": 0, "history": []})
-        if path in ("/api/optimal-config", "/api/tearsheet", "/api/signals-db", "/api/trade-journal"):
-            return self._json({})
-
-        if path == "/api/factor-scores":
-            with state.state_lock:
-                df = state.APP_STATE.get("factor_scores")
-                data = df.to_dict(orient="index") if isinstance(df, pd.DataFrame) and not df.empty else {}
-            return self._json(data)
-
         if path == "/api/fundamentals":
+            # yfinance quality scores (if installed) plus every company in the fundamentals master CSV,
+            # so a CSV added on the Earnings tab also feeds the screener's signal.
             with state.state_lock:
                 fc = copy.deepcopy(state.APP_STATE.get("fundamental_cache") or {})
-                min_score = state.APP_STATE.get("fundamental_min_score", 45)
-            return self._json({"min_score": min_score, "loaded": len(fc) > 0, "stocks": fc})
+            for sym, row in _master_scores().items():
+                fc.setdefault(sym + ".NS", row)
+            return self._json({"loaded": len(fc) > 0, "stocks": fc})
+
+        if path == "/api/sectors":
+            return self._json(md.sector_performance())
 
         if path == "/api/settings/status":
             return self._json({"has_upstox_token": bool(state.UPSTOX_TOKEN)})
-
-        if path == "/api/live-state":
-            with state.state_lock:
-                # Skip the price-cache DataFrames: they are large and not JSON.
-                data = {k: copy.deepcopy(v) for k, v in state.APP_STATE.items()
-                        if not isinstance(v, (pd.DataFrame, pd.Series))}
-            data["timeline_bounds"] = {"min": "2024-01-01", "max": "2024-12-31"}
-            data["regime"] = "N/A"
-            return self._json(data)
 
         if path.startswith("/upstox-api/"):
             return self._proxy_upstox(url)

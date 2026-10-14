@@ -1,28 +1,33 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useStore } from './lib/store';
 import { useScreenerData, useScreenerPolling } from './hooks/useScreenerData';
 import { useAlertMonitor } from './hooks/useAlertMonitor';
+import { UNIVERSE } from './lib/upstoxApi';
 import {
   LineChart, LayoutGrid, Star, BellRing, Settings,
-  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper, CalendarClock, Rocket
+  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper, CalendarClock, Rocket, PieChart
 } from 'lucide-react';
 import Screens          from './pages/Screens';
-import Company          from './pages/Company';
-import SettingsPanel    from './components/SettingsPanel';
-import SectorHeatmap    from './components/SectorHeatmap';
-import AlertsPanel      from './components/AlertsPanel';
-import WatchlistPanel   from './components/WatchlistPanel';
-import News             from './pages/News';
-import Earnings         from './pages/Earnings';
-import PreResults       from './pages/PreResults';
+
+// Everything except the default screen loads on first visit, which keeps the chart library
+// and the bigger pages out of the initial bundle.
+const Company        = lazy(() => import('./pages/Company'));
+const SettingsPanel  = lazy(() => import('./components/SettingsPanel'));
+const ChartModal     = lazy(() => import('./components/ChartModal'));
+const Sectors        = lazy(() => import('./pages/Sectors'));
+const AlertsPanel    = lazy(() => import('./components/AlertsPanel'));
+const WatchlistPanel = lazy(() => import('./components/WatchlistPanel'));
+const News           = lazy(() => import('./pages/News'));
+const Earnings       = lazy(() => import('./pages/Earnings'));
+const PreResults     = lazy(() => import('./pages/PreResults'));
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const {
     apiToken, loading, error, lastUpdated, marketOpen,
-    watchlist, needsApiToken, theme, toggleTheme,
+    watchlist, needsApiToken, theme, toggleTheme, chartModalTicker,
   } = useStore();
 
   const { pollOnce } = useScreenerData();
@@ -62,18 +67,18 @@ export default function App() {
       )}
 
       <header className="h-14 flex items-center justify-between px-6 shrink-0 border-b" style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}>
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-6 min-w-0">
           <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate('/')}>
             <div className="w-7 h-7 rounded flex items-center justify-center" style={{ background: 'var(--accent)' }}>
               <LineChart size={14} color="#fff" />
             </div>
-            <span className="font-semibold text-sm" style={{ color: 'var(--text)' }}>India Screener</span>
+            <span className="font-semibold text-sm whitespace-nowrap hidden sm:inline" style={{ color: 'var(--text)' }}>India Screener</span>
           </div>
 
-          <nav className="flex items-center gap-1 overflow-x-auto">
+          <nav className="flex items-center gap-1 overflow-x-auto min-w-0" style={{ scrollbarWidth: 'none' }}>
             <NavLink active={path === '/'} onClick={() => navigate('/')} icon={LayoutGrid} label="Screener" />
             <NavLink active={path === '/watchlist'} onClick={() => navigate('/watchlist')} icon={Star} label={`Watchlist${watchlist.length ? ` (${watchlist.length})` : ''}`} />
-            <NavLink active={path === '/heatmap'} onClick={() => navigate('/heatmap')} icon={LayoutGrid} label="Sectors" />
+            <NavLink active={path === '/sectors' || path === '/heatmap'} onClick={() => navigate('/sectors')} icon={PieChart} label="Sectors" />
             <NavLink active={path === '/earnings'} onClick={() => navigate('/earnings')} icon={CalendarClock} label="Earnings" />
             <NavLink active={path === '/pre-results'} onClick={() => navigate('/pre-results')} icon={Rocket} label="Pre-Results" />
             <NavLink active={path === '/news'} onClick={() => navigate('/news')} icon={Newspaper} label="News" />
@@ -81,10 +86,10 @@ export default function App() {
           </nav>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 shrink-0 pl-3">
           {error && <div className="flex items-center gap-1 text-xs max-w-[280px] truncate" title={error} style={{ color: 'var(--down)' }}><AlertCircle size={13} className="shrink-0" /> {error}</div>}
           {marketOpen && (
-            <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--up)' }}>
+            <div className="hidden lg:flex items-center gap-1.5 text-xs font-medium whitespace-nowrap" style={{ color: 'var(--up)' }}>
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--up)', animation: 'pulse 1.5s ease-in-out infinite' }} />
               Market open
             </div>
@@ -109,23 +114,28 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-hidden relative">
-        <Routes>
-          <Route path="/" element={<Screens />} />
-          <Route path="/company/:symbol" element={<Company />} />
-          <Route path="/watchlist" element={<WatchlistPanel />} />
-          <Route path="/heatmap" element={<SectorHeatmap />} />
-          <Route path="/earnings" element={<Earnings />} />
-          <Route path="/pre-results" element={<PreResults />} />
-          <Route path="/news" element={<News />} />
-          <Route path="/alerts" element={<AlertsPanel />} />
-          <Route path="/settings" element={<SettingsPanel />} />
-          <Route path="*" element={<Screens />} />
-        </Routes>
+        <Suspense fallback={<div className="p-10 text-sm text-center" style={{ color: 'var(--text-faint)' }}>Loading…</div>}>
+          <Routes>
+            <Route path="/" element={<Screens />} />
+            <Route path="/company/:symbol" element={<Company />} />
+            <Route path="/watchlist" element={<WatchlistPanel />} />
+            <Route path="/sectors" element={<Sectors />} />
+            <Route path="/heatmap" element={<Sectors />} />
+            <Route path="/earnings" element={<Earnings />} />
+            <Route path="/pre-results" element={<PreResults />} />
+            <Route path="/news" element={<News />} />
+            <Route path="/alerts" element={<AlertsPanel />} />
+            <Route path="/settings" element={<SettingsPanel />} />
+            <Route path="*" element={<Screens />} />
+          </Routes>
+        </Suspense>
       </main>
+
+      {chartModalTicker && <Suspense fallback={null}><ChartModal ticker={chartModalTicker} /></Suspense>}
 
       <footer className="px-6 py-2 text-xs border-t flex items-center justify-between" style={{ color: 'var(--text-faint)', borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}>
         <span>{apiToken ? `Data: Upstox live${lastUpdated ? ` · updated ${lastUpdated}` : ''}` : 'Data: no API token configured — connect in Settings'}</span>
-        <span>Nifty 500 universe · Rule-based signals · Not investment advice</span>
+        <span>Nifty Total Market ({Object.keys(UNIVERSE).length} stocks) · Rule-based signals · Not investment advice</span>
       </footer>
     </div>
   );
@@ -133,7 +143,7 @@ export default function App() {
 
 function NavLink({ active, onClick, icon: Icon, label }) {
   return (
-    <button onClick={onClick} className={`nav-link${active ? ' active' : ''}`}>
+    <button onClick={onClick} className={`nav-link whitespace-nowrap shrink-0${active ? ' active' : ''}`}>
       <Icon size={13} />
       {label}
     </button>

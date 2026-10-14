@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
 import { Search, Star, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
-import { SECTORS } from '../lib/upstoxApi';
+import { SECTORS, CAPS } from '../lib/upstoxApi';
 import { Delta, RsiCell, RangeBar, signalLabel, signalClass, inr, compactVol, volRatio } from '../lib/format.jsx';
 
 import { filterDataByQuery } from '../lib/query';
@@ -16,7 +16,7 @@ const COLUMNS = [
   { key: 'changePct',   label: 'Change %',       sortable: true,  align: 'right' },
   { key: 'volume',      label: 'Volume',         sortable: true,  align: 'right', hideOnMobile: true },
   { key: 'rsi',         label: 'RSI',            sortable: true,  align: 'right', hideOnMobile: true },
-  { key: 'nlpSentiment',label: 'Sentiment (7d)', sortable: true,  align: 'right', hideOnMobile: true },
+  { key: 'relVol',      label: 'Rel. vol',       sortable: true,  align: 'right', hideOnMobile: true },
   { key: 'fundamentalScore', label: 'Fund. Score', sortable: true, align: 'right', hideOnMobile: true },
   { key: '52w',         label: '52w range',      sortable: false, align: 'center', hideOnMobile: true },
   { key: 'daysAbove200Sma', label: 'vs 200 SMA', sortable: true, align: 'right', hideOnMobile: true },
@@ -48,6 +48,7 @@ export default function ScreenerTable() {
     return result
       .filter(d => {
         if (filters.sector !== 'All' && d.sector !== filters.sector) return false;
+        if (filters.cap && filters.cap !== 'All' && d.cap !== filters.cap) return false;
         if (filters.signal !== 'All' && d.signal !== filters.signal) return false;
         if (filters.technical !== 'All') {
           if (filters.technical === 'Price > 200 SMA' && !(d.ltp > d.sma200)) return false;
@@ -145,6 +146,12 @@ export default function ScreenerTable() {
         >
           <option value="All">All sectors</option>
           {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        <select className="select" value={filters.cap || 'All'} onChange={e => setFilter('cap', e.target.value)}
+          title="Large = Nifty 100, Mid = Midcap 150, Small = Smallcap 250, Micro = Microcap 250">
+          <option value="All">All sizes</option>
+          {CAPS.map(c => <option key={c} value={c}>{c} cap</option>)}
         </select>
 
         <select
@@ -287,13 +294,10 @@ function TableRow({ row, isSelected, isWatched, onSelect, onToggleWatch }) {
         <RsiCell value={row.rsi} />
       </td>
 
-      {/* NLP Sentiment */}
-      <td className="num hidden md:table-cell">
-        {row.nlpSentiment != null ? (
-          <span style={{ color: row.nlpSentiment > 0.1 ? 'var(--up)' : row.nlpSentiment < -0.1 ? 'var(--down)' : 'var(--text)' }}>
-            {row.nlpSentiment > 0 ? '+' : ''}{row.nlpSentiment.toFixed(2)}
-          </span>
-        ) : <span style={{ color: 'var(--text-faint)' }}>{EN_DASH}</span>}
+      {/* Volume vs 20-day average */}
+      <td className="num hidden md:table-cell" title="Today's volume ÷ 20-day average"
+        style={{ color: row.relVol >= 2 ? 'var(--accent)' : 'var(--text-muted)', fontWeight: row.relVol >= 2 ? 600 : 400 }}>
+        {volRatio(row.volume, row.avgVolume)}
       </td>
 
       {/* Fundamental Score */}

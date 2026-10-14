@@ -3,16 +3,10 @@ from http.server import ThreadingHTTPServer
 
 import state
 from api import LiveAPIHandler
-from data_manager import init_global_caches
 from engine import simulation_worker
 
 
 def start_server():
-    try:
-        init_global_caches()
-    except Exception as e:  # a bad cache must not stop the API from starting
-        print(f"⚠️  Price cache init failed: {e}")
-
     class ReusableHTTPServer(ThreadingHTTPServer):
         allow_reuse_address = True
         daemon_threads = True

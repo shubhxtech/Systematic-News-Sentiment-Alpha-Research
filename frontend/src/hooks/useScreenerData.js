@@ -66,11 +66,18 @@ async function loadMissingHistory(tickers) {
       const result = await getHistoricalCandles(ticker).catch(() => ({ daily: [], intraday: [] }));
       if (result.daily.length || result.intraday.length) {
         st.setCandleCache(ticker, result);
-        const fundScore = st.screenerData[ticker]?.fundamentalScore ?? null;
-        const sig = signalFields(result.daily, fundScore);
-        if (sig) st.updateTicker(ticker, sig);
+        const row = st.screenerData[ticker];
+        const sig = signalFields(result.daily, row?.fundamentalScore ?? null);
+        if (sig) {
+          const last20 = result.daily.slice(-20);
+          const avgVolume = last20.length === 20 ? last20.reduce((a, c) => a + c.volume, 0) / 20 || null : null;
+          st.updateTicker(ticker, {
+            ...sig, avgVolume,
+            relVol: avgVolume && row?.volume != null ? row.volume / avgVolume : null,
+          });
+        }
       }
-      await new Promise(r => setTimeout(r, 1200));
+      if (!result.cached) await new Promise(r => setTimeout(r, 1200)); // throttle network fetches only
     }
   } finally {
     historyLoopRunning = false;
@@ -159,6 +166,7 @@ export function useScreenerData() {
             changePct,
             volume: q.volume,
             avgVolume: avgVol,
+            relVol: avgVol && q.volume != null ? q.volume / avgVol : null,
             fundamentalScore: fundScore,
             fundamentals: fundData[ticker + '.NS'] || null,
             week52High: q['52_week_high'] ?? sig.week52High ?? prev.week52High ?? null,

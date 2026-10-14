@@ -17,9 +17,5 @@ if not UPSTOX_TOKEN:
         pass
 
 APP_STATE = {
-    "status": "ONLINE",
-    "fundamental_min_score": 45,
-    "yfinance_cache": None,
-    "fundamental_cache": {},
-    "factor_scores": None
+    "fundamental_cache": {},   # yfinance quality scores, refreshed by engine.simulation_worker
 }

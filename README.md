@@ -1,144 +1,141 @@
 # India Quant Screener
 
-A high-performance, rule-based quantitative screener for the **NIFTY 500** universe, featuring live Upstox integration, FinBERT NLP sentiment, ML-driven signals, and interactive TradingView charts.
+A screener for Indian equities built around one question: **which stocks are setting up
+ahead of their quarterly results, and is the news around them actually material?**
 
-## Features
+It covers the Nifty Total Market universe (Nifty 500 + Microcap 250, about 750 stocks), pulls
+live quotes from Upstox, and reads results dates, filings and delivery data straight from NSE.
+Every score is rule-based and comes with the reasons behind it, so you can check the logic
+instead of trusting a number.
 
-- **Live Market Data** — Real-time quotes and OHLCV data via the Upstox API
-- **Advanced Charting** — TradingView Lightweight Charts v5 (candlesticks, RSI, MACD, crosshair sync)
-- **NLP News Sentiment** — FinBERT-scored headlines (30-day window) via local Python backend
-- **Fundamental Quality** — P/E, ROE, Debt/Equity, Net Margin
-- **Rule-Based Signals** — Combined Trend + Momentum + Volume + NLP + Fundamentals score
-- **Alerts Engine** — Browser-based price crossover, RSI threshold, and signal-change alerts
-- **Sector Heatmap** — Visual market breadth breakdown by sector
-- **Pre-Results Momentum Scanner** — Ranks companies reporting in the next 14–45 days by *emerging* momentum:
-  sessions to results, 5/10/20-day returns vs sector index and Nifty 500, acceleration, relative volume,
-  NSE delivery trend, each stock's own drift and gap around past results, fundamentals, recent filings,
-  liquidity and volatility. Already-extended stocks are penalised. Every row explains why it qualifies and what the risks are.
-- **Catalyst Intelligence** — Filings and headlines are typed (order win/cancellation, earnings, guidance,
-  capacity, regulatory action/approval, promoter buy/sell, pledges, fund raising, management change, M&A,
-  partnerships, analyst ratings, price commentary). Order value, execution period, client and % of revenue
-  are extracted. Each item gets novelty (repeat detection), materiality, pre-move in σ (priced in?) and
-  source reliability (exchange filing > company > media > rumour).
-- **Dark / Light Theme** — Fully supported
+It is a research tool. Nothing here is a forecast or investment advice.
 
-## Tech Stack
+## What it does
 
-| Layer | Technologies |
-|-------|-------------|
-| Frontend | React 18, Vite, Tailwind CSS, Zustand, Lightweight Charts |
-| Backend | Python 3.12, FinBERT (HuggingFace), scikit-learn, SHAP |
-| Data | Upstox API (live), yfinance (historical fallback) |
-| Caching | IndexedDB (quotes), LocalStorage (watchlist/alerts) |
+**Screener.** Live price, change, volume against its 20-day average, RSI, 52-week range and a
+composite technical signal (trend, MACD, Supertrend, volume) for every stock in the universe.
+Filter by sector, size bucket or a query such as `RSI < 35 AND relvol > 2`.
 
-## Project Structure
+**Pre-Results.** The main feature. It takes every company reporting in the next 2–6 weeks and
+asks whether momentum is *starting* to build:
 
-```
-india-quant-screener/
-├── backend/               ← Python HTTP server & ML/NLP pipelines
-│   ├── live_server.py     ← Entry point (run this first)
-│   ├── api.py             ← HTTP routes
-│   ├── market_data.py     ← NSE/BSE/Upstox clients, trading calendar, delivery data, disk cache
-│   ├── premomentum.py     ← Pre-results momentum scanner
-│   ├── catalysts.py       ← Catalyst classification and scoring
-│   ├── earnings.py        ← Board-meeting CSV screen
-│   ├── news.py            ← Headline aggregation
-│   ├── tests/             ← python3 -m unittest discover tests
-│   ├── config.py          ← Tickers, sectors, pipeline config
-│   ├── news_trading_pipeline.py
-│   ├── ml_portfolio.py
-│   ├── factor_engine.py
-│   ├── regime_detector.py
-│   ├── insider_scraper.py
-│   ├── insider_signal_engine.py
-│   ├── earnings_scraper.py
-│   ├── tone_shift_detector.py
-│   ├── build_universe.py
-│   ├── requirements.txt
-│   └── data/              ← Insider & transcript data
-│
-├── frontend/              ← React screener application
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── components/    ← UI panels (ScreenerTable, ChartModal, etc.)
-│   │   ├── pages/         ← Screens.jsx, Company.jsx
-│   │   ├── hooks/         ← useScreenerData.js
-│   │   └── lib/           ← store, indicators, signals, upstoxApi
-│   ├── scripts/dev/       ← Dev test scripts
-│   ├── package.json
-│   └── vite.config.js
-│
-└── docs/                  ← Notes, protocol files
-    ├── NOTES.md
-    ├── SCREENER_README.md
-    └── MarketDataFeed.proto
-```
+- sessions left until the results board meeting (NSE holidays excluded)
+- 5-, 10- and 20-day returns relative to the stock's sector index and the Nifty 500
+- acceleration (last 5 sessions vs the 5 before) and relative volume
+- delivered quantity vs the prior 20 sessions, from NSE's daily delivery file
+- how the stock behaved before its own past results (drift, hit rate) and the gap after them
+- fundamentals, exchange filings from the last 30 days, liquidity and volatility
 
-## Getting Started
+Stocks that have already run hard (20-day move above 1.5σ, or RSI above 70) are penalised, as
+are names reporting within two sessions. Each row is labelled Early, Building, Neutral,
+Extended, Weak or Too close, and expands to show why it qualifies and what the risks are.
 
-### ⚡ One-tap launch (recommended)
+**Catalysts** (on each company page, and in the News tab). Filings and headlines are typed as
+order win or cancellation, earnings, guidance change, capacity expansion, regulatory action or
+approval, promoter buying or selling, pledges, fund raising, management change, M&A,
+partnership, analyst rating or plain price commentary. For each item the app works out:
+
+- *materiality*: order value as a % of annual revenue, fund raise as a % of market cap, and so on
+- *novelty*: the same story from three outlets and the exchange counts once
+- *price reaction*: how far the stock moved in the five sessions before the item, in σ
+- *source reliability*: exchange filing, then company statement, then established media, then unverified reports
+
+The resulting impact score is direction × materiality × novelty × reliability, reduced when the
+move already happened.
+
+**Earnings.** Upload a board-meeting CSV exported from BSE and a fundamentals CSV in Screener.in's
+format. The app resolves every company to its NSE symbol, attaches fundamentals and price data,
+and ranks the list. The fundamentals you upload also feed the screener and the pre-results scan.
+
+**Sectors.** Today's median move and breadth for each NSE sector, plus 5/20/60-day performance
+against the Nifty 500, with a heatmap of every stock underneath.
+
+Also: company pages with daily and intraday charts, a watchlist, and price/RSI/signal alerts
+that fire as browser notifications on any page.
+
+## Running it
+
+You need Python 3.10+, Node 18+ and an Upstox access token for live quotes. Historical candles,
+NSE data and the pre-results scan work without one.
 
 ```bash
-cd india-quant-screener
 ./start.sh
 ```
 
-The script will:
-1. Kill any stale processes on ports `8766` / `5175`
-2. Auto-detect your conda `quant_env` or `.venv`
-3. Start the Python backend and wait for it to be healthy
-4. Install frontend npm deps if needed, then start Vite
-5. Open `http://localhost:5175` in your browser automatically
-6. Stream live backend logs — press **Ctrl+C** to stop everything cleanly
+That starts the backend on port 8766 and the frontend on 5175, and opens the browser. To run the
+two halves yourself:
 
-Logs are saved to `.logs/backend.log` and `.logs/frontend.log`.
-
----
-
-### Manual startup (if needed)
-
-**Backend:**
 ```bash
-cd backend
-conda activate quant_env        # or: source .venv/bin/activate
-pip install -r requirements.txt # first time only
-python live_server.py           # starts on http://localhost:8766
+cd backend && pip install -r requirements.txt && python3 live_server.py
+cd frontend && npm install && npm run dev
 ```
 
-**Frontend:**
+Paste the Upstox token under Settings. It is stored by the backend in `backend/.upstox_token`
+(file mode 600) and never kept in the browser. Upstox tokens expire every morning, so you will
+need a fresh one each trading day.
+
+The stock universe lives in `frontend/src/lib/universe.json`. Rebuild it after NSE rebalances its
+indices (March and September):
+
 ```bash
-cd frontend
-npm install                     # first time only
-npm run dev                     # starts on http://localhost:5175
+cd backend && python3 build_universe.py
 ```
-
-### Configure Upstox API Token
-
-1. Open the app at `http://localhost:5175`
-2. Click the **Settings** (⚙) icon in the top-right
-3. Paste your Upstox JWT token
-4. The token is securely proxied through the backend — never exposed in the browser
 
 ## Tests
 
 ```bash
-cd backend && python3 -m unittest discover tests   # offline, no network
+cd backend && python3 -m unittest discover tests   # offline, no network needed
 cd frontend && npm test
 ```
 
-## Data Sources
+## Layout
 
-| Source | Usage |
-|--------|-------|
-| Upstox API | Live quotes, OHLCV candles |
-| FinBERT (local) | News headline sentiment scoring |
-| HuggingFace `ProsusAI/finbert` | NLP model |
-| yfinance | Historical price fallback (optional) |
-| NSE (nseindia.com) | Upcoming/past results board meetings, corporate filings, holidays, delivery bhavcopy |
-| BSE (bseindia.com) | Filings for BSE-only companies |
+```
+backend/
+  live_server.py     HTTP server entry point
+  api.py             routes, Upstox proxy
+  market_data.py     NSE, BSE and Upstox clients, trading calendar, delivery data, disk cache
+  premomentum.py     pre-results scanner
+  catalysts.py       event classification and scoring
+  earnings.py        board-meeting CSV pipeline, fundamentals scoring
+  news.py            headline aggregation (ET, Moneycontrol, Google News, Yahoo)
+  news_dedup.py      merges near-duplicate headlines
+  build_universe.py  regenerates the stock universe from NSE index lists
+  data/              fundamentals master, cached candles/filings, saved scan runs
+frontend/src/
+  pages/             Screener, Company, Pre-Results, Earnings, Sectors, News
+  components/        tables, panels, chart modal
+  hooks/             quote polling, alert monitoring
+  lib/               API client, indicators, signal engine, store
+```
 
-> **Disclaimer**: This is a research/educational tool. All signals are purely rule-based algorithmic scores and do **not** constitute financial or investment advice.
+## Data sources
+
+| Source | Used for |
+|---|---|
+| Upstox API | live quotes (token), daily and intraday candles |
+| NSE | upcoming and past results dates, corporate filings, holiday calendar, delivery data, index constituents |
+| BSE | filings for companies listed only on BSE |
+| ET, Moneycontrol, Google News, Yahoo Finance | headlines |
+| Your CSVs | board-meeting calendar, fundamentals |
+
+NSE throttles scrapers, so the backend spaces out its requests and caches everything on disk.
+A first pre-results scan takes one to three minutes; repeat scans take seconds.
+
+## Limitations
+
+- Fundamentals only exist for companies in your uploaded CSV (or from yfinance, if installed).
+  Without them, an order's value cannot be put in proportion to revenue.
+- Filings are read from their exchange summaries, not the attached PDFs. If a penalty's amount
+  is only in the PDF, it is marked medium materiality and flagged.
+- Past results dates come without announcement times, so the post-result gap is measured from
+  that day's close to the next session's open.
+- The event classifier is a set of rules. It handles the common filing and headline patterns,
+  but it will misread some unusual wording.
+- Scores describe the setup and each stock's own history. They do not estimate the odds of an
+  earnings beat.
 
 ## License
 
-MIT License. TradingView Lightweight Charts is licensed under Apache 2.0 — see [`docs/SCREENER_README.md`](docs/SCREENER_README.md) for third-party notices.
+MIT. Charts use TradingView Lightweight Charts (Apache 2.0); see
+[`frontend/THIRD_PARTY_NOTICES.md`](frontend/THIRD_PARTY_NOTICES.md).

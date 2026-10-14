@@ -92,10 +92,6 @@ export const useStore = create((set, get) => ({
     candleCache: { ...s.candleCache, [ticker]: candles }
   })),
 
-  // ── NLP sentiments ─────────────────────────────────────────────────────────
-  nlpSentiments: {},
-  setNLPSentiments: (data) => set({ nlpSentiments: data }),
-
   // ── Watchlist ─────────────────────────────────────────────────────────────
   watchlist: savedWatchlist,
   addToWatchlist: (ticker) => set(s => {
@@ -152,7 +148,7 @@ export const useStore = create((set, get) => ({
 
   // ── Filters ───────────────────────────────────────────────────────────────
   filters: {
-    search: '', sector: 'All', signal: 'All', technical: 'All',
+    search: '', sector: 'All', cap: 'All', signal: 'All', technical: 'All',
     minRSI: 0, maxRSI: 100, minScore: 0,
     showWatchlistOnly: false,
     sortBy: 'signalScore', sortDir: 'desc',

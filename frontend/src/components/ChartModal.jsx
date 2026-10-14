@@ -3,13 +3,39 @@ import { useStore } from '../lib/store';
 import { X, Layers } from 'lucide-react';
 import { createChart, CrosshairMode, CandlestickSeries, LineSeries, HistogramSeries } from 'lightweight-charts';
 import { ema, vwap } from '../lib/indicators';
-import { UNIVERSE } from '../lib/upstoxApi';
+import { UNIVERSE, getDailyCandles, getIntradayCandles } from '../lib/upstoxApi';
 import { chartTime } from '../lib/format.jsx';
 
 export default function ChartModal({ ticker }) {
-  const { candleCache, setChartModalTicker, theme } = useStore();
+  const { candleCache, setChartModalTicker, setCandleCache, theme } = useStore();
   const [overlays, setOverlays] = useState({ ema21: true, ema50: true, bb: false, supertrend: false, rsi: false, macd: false, vwap: false });
   const [timeframe, setTimeframe] = useState('daily'); // 'daily' or 'intraday'
+  const [status, setStatus] = useState('');           // '' | 'loading' | error text
+
+  // Fetch what the chosen timeframe needs. Intraday bars are no longer downloaded for every stock
+  // in the background, only here when asked for.
+  const have = (candleCache[ticker]?.[timeframe] || []).length > 0;
+  useEffect(() => {
+    if (!ticker || have) return;
+    let active = true;
+    setStatus('loading'); // eslint-disable-line react-hooks/set-state-in-effect
+    const load = timeframe === 'intraday'
+      ? getIntradayCandles(ticker).then(intraday => ({ intraday }))
+      : getDailyCandles(ticker).then(({ daily }) => ({ daily }));
+    load.then(patch => {
+      if (!active) return;
+      const prev = useStore.getState().candleCache[ticker] || { daily: [], intraday: [] };
+      setCandleCache(ticker, { ...prev, ...patch });
+      setStatus(Object.values(patch)[0]?.length ? '' : 'No bars returned for this timeframe');
+    }).catch(e => active && setStatus(e.message));
+    return () => { active = false; };
+  }, [ticker, timeframe, have, setCandleCache]);
+
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && setChartModalTicker(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setChartModalTicker]);
 
   const chartContainerRef = useRef();
   
@@ -163,8 +189,6 @@ export default function ChartModal({ ticker }) {
     };
   }, [chartData, overlays, timeframe, theme]);
 
-  if (!candles.length) return null;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-8 animate-in fade-in duration-200">
       <div className="bg-[var(--bg)] border border-[var(--border)] rounded-xl w-full max-w-6xl h-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden slide-up">
@@ -231,8 +255,13 @@ export default function ChartModal({ ticker }) {
         </div>
 
         {/* ── Chart Area ─────────────────────────────────────────────────── */}
-        <div className="flex-1 relative" ref={chartContainerRef}>
-          {/* Lightweight Charts attaches the canvas here */}
+        <div className="flex-1 relative">
+          <div className="absolute inset-0" ref={chartContainerRef} />
+          {!candles.length && (
+            <div className="absolute inset-0 flex items-center justify-center text-sm" style={{ color: 'var(--text-faint)' }}>
+              {status === 'loading' || !status ? 'Loading…' : status}
+            </div>
+          )}
         </div>
       </div>
     </div>

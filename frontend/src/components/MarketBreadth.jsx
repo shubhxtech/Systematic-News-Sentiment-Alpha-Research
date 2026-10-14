@@ -23,7 +23,7 @@ export default function MarketBreadth() {
       style={{ color: 'var(--text-muted)', borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}
     >
       <span className="font-medium" style={{ color: 'var(--text)' }}>
-        Nifty 500 · {stats.total} stocks
+        Nifty Total Market · {stats.total} stocks
       </span>
 
       <span className="flex items-center gap-1">

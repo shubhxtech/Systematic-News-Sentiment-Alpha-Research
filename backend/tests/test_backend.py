@@ -288,13 +288,12 @@ class APITests(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("invalid JSON", body["error"])
 
-    def test_live_state_with_dataframe_cache(self):
-        import state
-        with state.state_lock:
-            state.APP_STATE["yfinance_cache"] = pd.DataFrame({"a": [1.0, float("nan")]})
-        code, body = self.req("/api/live-state")
+    def test_fundamentals_include_master_csv(self):
+        code, body = self.req("/api/fundamentals")
         self.assertEqual(code, 200)
-        self.assertNotIn("yfinance_cache", body)
+        self.assertIn("stocks", body)
+        for v in body["stocks"].values():
+            self.assertTrue(0 <= v["score"] <= 100)
 
     def test_unknown_routes_and_jobs(self):
         self.assertEqual(self.req("/api/nope")[0], 404)
