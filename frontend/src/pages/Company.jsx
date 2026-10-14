@@ -3,92 +3,96 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
 import { createChart, CrosshairMode, CandlestickSeries, LineSeries } from 'lightweight-charts';
 import { ema } from '../lib/indicators';
-import { ArrowLeft, Activity, BookOpen, Check, X, Newspaper, ExternalLink, Clock, TrendingUp } from 'lucide-react';
-import { inr, pct, signalLabel, signalClass } from '../lib/format';
+import { ArrowLeft, Activity, BookOpen, Check, X, Newspaper, ExternalLink, RefreshCw } from 'lucide-react';
+import { inr, pct, signalLabel, signalClass, chartTime } from '../lib/format';
+import { CatalystItem, NetScore } from '../components/CatalystList';
 import { getHistoricalCandles, UNIVERSE } from '../lib/upstoxApi';
 import { computeSignal } from '../lib/signal';
 
+// Default view: new, typed events. Untyped news, market colour and repeats sit behind "Show all".
+const isHeadline = (i) => i.novelty >= 0.5 && !['price_commentary', 'other', 'routine'].includes(i.event_type);
+
 export default function Company() {
-  const { symbol } = useParams();
+  const { symbol: rawSymbol } = useParams();
+  const symbol = (rawSymbol || '').toUpperCase();
   const navigate = useNavigate();
   const { screenerData, candleCache, theme, updateTicker, setCandleCache } = useStore();
   const data = screenerData[symbol];
   
   const [loadError, setLoadError] = useState(null);
-  const [news, setNews] = useState([]);
-  const [newsLoading, setNewsLoading] = useState(false);
+  const [cat, setCat] = useState(null);           // {profile, summary, items, notes}
+  const [catLoading, setCatLoading] = useState(false);
+  const [catError, setCatError] = useState('');
+  const [catReload, setCatReload] = useState(0);
+  const [showAll, setShowAll] = useState(false);
 
   const chartContainerRef = useRef();
   
   const cache = candleCache[symbol] || { daily: [], intraday: [] };
   const candles = cache['daily'] || [];
 
-  // Fetch candle data and initialize ticker if missing (handles direct navigation / refresh)
+  // Fetch candles when missing (direct navigation / refresh / non-universe symbol). Depends only on
+  // symbol + "do we have candles", so screener updates no longer refetch, and a failure sets an
+  // error instead of spinning forever.
+  const needsCandles = !candles.length;
   useEffect(() => {
-    if (!symbol) return;
+    if (!symbol || !needsCandles) return;
     let active = true;
-
-    async function loadData() {
-      if (!candles.length || !data) {
-        try {
-          const res = await getHistoricalCandles(symbol);
-          if (!active) return;
-          if (res?.daily?.length) {
-            setCandleCache(symbol, res);
-            const last = res.daily[res.daily.length - 1];
-            const prev = res.daily[res.daily.length - 2];
-            const changePct = prev ? ((last.close - prev.close) / prev.close) * 100 : 0;
-            const { score, signal, breakdown, indicators, warning } = computeSignal(res.daily);
-            updateTicker(symbol, {
-              ticker: symbol,
-              name: UNIVERSE[symbol]?.name || symbol,
-              sector: UNIVERSE[symbol]?.sector || '–',
-              ltp: last?.close,
-              changePct,
-              signalScore: score,
-              signal,
-              breakdown,
-              signalWarning: warning,
-              rsi: indicators?.rsiVal,
-              ema21: indicators?.ema21,
-              ema50: indicators?.ema50,
-              volume: last?.volume,
-              week52High: Math.max(...res.daily.slice(-252).map(c => c.high)),
-              week52Low: Math.min(...res.daily.slice(-252).map(c => c.low)),
-            });
-          }
-        } catch (e) {
-          if (active) setLoadError(e.message);
+    setLoadError(null); // eslint-disable-line react-hooks/set-state-in-effect
+    getHistoricalCandles(symbol)
+      .then(res => {
+        if (!active) return;
+        if (!res?.daily?.length) {
+          setLoadError('no price history returned');
+          return;
         }
-      }
-    }
-
-    loadData();
+        setCandleCache(symbol, res);
+        const last = res.daily[res.daily.length - 1];
+        const prev = res.daily[res.daily.length - 2];
+        const { score, signal, breakdown, indicators, warning } = computeSignal(res.daily);
+        const existing = useStore.getState().screenerData[symbol];
+        const last252 = res.daily.slice(-252);
+        updateTicker(symbol, {
+          ticker: symbol,
+          name: existing?.name || UNIVERSE[symbol]?.name || res.name || symbol,
+          sector: existing?.sector || UNIVERSE[symbol]?.sector || '–',
+          ltp: existing?.ltp ?? last?.close,
+          changePct: existing?.changePct ?? (prev ? ((last.close - prev.close) / prev.close) * 100 : null),
+          volume: existing?.volume ?? last?.volume,
+          signalScore: score,
+          signal,
+          breakdown,
+          signalWarning: warning,
+          ...indicators,
+          rsi: indicators?.rsiVal,
+          week52High: last252.reduce((m, c) => Math.max(m, c.high), -Infinity),
+          week52Low: last252.reduce((m, c) => Math.min(m, c.low), Infinity),
+        });
+      })
+      .catch(e => { if (active) setLoadError(e.message); });
     return () => { active = false; };
-  }, [symbol, candles.length, data, setCandleCache, updateTicker]);
+  }, [symbol, needsCandles, setCandleCache, updateTicker]);
 
-  // Fetch company news
+  // Catalyst intelligence: exchange filings + headlines, typed and scored on the backend
   useEffect(() => {
     if (!symbol) return;
-    let active = true;
-    setNewsLoading(true);
-
-    const query = data?.name || UNIVERSE[symbol]?.name || symbol;
-    fetch(`/api/news?q=${encodeURIComponent(query)}&ticker=${symbol}`)
-      .then(res => res.json())
-      .then(d => {
-        if (active) setNews(Array.isArray(d) ? d : []);
+    const ctrl = new AbortController();
+    setCatLoading(true); // eslint-disable-line react-hooks/set-state-in-effect
+    setCatError('');
+    fetch(`/api/catalysts?symbol=${encodeURIComponent(symbol)}&days=45`, { signal: ctrl.signal })
+      .then(async res => {
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+        setCat(d);
       })
       .catch(err => {
-        console.error('Failed to load company news:', err);
-        if (active) setNews([]);
+        if (err.name === 'AbortError') return;
+        setCat(null);
+        setCatError(err.message);
       })
-      .finally(() => {
-        if (active) setNewsLoading(false);
-      });
-
-    return () => { active = false; };
-  }, [symbol, data?.name]);
+      .finally(() => { if (!ctrl.signal.aborted) setCatLoading(false); });
+    return () => ctrl.abort();
+  }, [symbol, catReload]);
 
   const chartData = useMemo(() => {
     if (!candles.length) return { prices: [], volume: [], ema21: [], ema50: [] };
@@ -103,7 +107,7 @@ export default function Company() {
     const e50 = [];
 
     candles.forEach((c, i) => {
-      const time = Math.floor(new Date(c.date).getTime() / 1000);
+      const time = chartTime(c.date);
       prices.push({ time, open: c.open, high: c.high, low: c.low, close: c.close });
       volume.push({
         time,
@@ -143,6 +147,7 @@ export default function Company() {
     const ema50Series = chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 2, title: 'EMA 50' });
     ema50Series.setData(chartData.ema50);
 
+    chart.timeScale().fitContent();
     return () => chart.remove();
   }, [chartData, theme]);
 
@@ -172,7 +177,10 @@ export default function Company() {
   const ema21 = data.ema21 || 0;
   const ema50 = data.ema50 || 0;
   const rsi = data.rsi || 0;
-  const macdHistogram = data.breakdown?.macd || 0;
+  // breakdown has no "macd" key (it is "momentum"), so this check used to always fail
+  const macdHistogram = data.macdLine != null && data.macdSig != null
+    ? data.macdLine - data.macdSig
+    : (data.breakdown?.momentum?.score ?? 0);
 
   const checks = [
     { label: 'Price > EMA 50', passed: price > ema50 },
@@ -206,7 +214,7 @@ export default function Company() {
         <div className="text-right">
           <div className="text-3xl font-bold num tracking-tight" style={{ color: 'var(--text)' }}>₹{inr(data.ltp)}</div>
           <div className="text-base font-semibold mt-1 num" style={{ color: isUp ? 'var(--up)' : 'var(--down)' }}>
-            {isUp ? '+' : ''}{pct(data.changePct)}
+            {pct(data.changePct)}
           </div>
         </div>
         
@@ -235,8 +243,13 @@ export default function Company() {
           <div className="px-5 py-3 flex items-center justify-between border-b" style={{ borderColor: 'var(--border)', background: 'var(--bg-subtle)' }}>
             <span className="text-sm font-semibold tracking-wide" style={{ color: 'var(--text)' }}>Technical Chart (Daily)</span>
           </div>
-          <div className="flex-1 p-2">
+          <div className="flex-1 p-2 relative">
             <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
+            {!candles.length && (
+              <div className="absolute inset-0 flex items-center justify-center text-xs" style={{ color: loadError ? 'var(--down)' : 'var(--text-faint)' }}>
+                {loadError ? `Price history unavailable: ${loadError}` : 'Loading price history…'}
+              </div>
+            )}
           </div>
         </div>
 
@@ -320,21 +333,23 @@ export default function Company() {
             </div>
           </div>
 
-          {/* ── Recent Company News ───────────────────────────────────────── */}
+          {/* ── Catalyst intelligence ─────────────────────────────────────── */}
           <div className="card shadow-sm">
-            <div className="card-header border-b pb-3 flex items-center justify-between" style={{ borderColor: 'var(--border)' }}>
+            <div className="card-header border-b pb-3 flex items-center justify-between gap-2" style={{ borderColor: 'var(--border)' }}>
               <span className="card-title flex items-center gap-2 text-sm font-semibold uppercase tracking-wide">
-                <Newspaper size={15} style={{ color: 'var(--accent)' }} /> 
-                Recent News & Catalysts
+                <Newspaper size={15} style={{ color: 'var(--accent)' }} />
+                Catalysts (45 days)
               </span>
-              {news.length > 0 && (
-                <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
-                  {news.length} {news.length === 1 ? 'story' : 'stories'}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {cat?.summary && <NetScore value={cat.summary.net_score} />}
+                <button className="btn btn-ghost" style={{ width: 26, height: 26, padding: 0, justifyContent: 'center' }}
+                  title="Refresh" onClick={() => setCatReload(n => n + 1)} disabled={catLoading}>
+                  <RefreshCw size={12} style={catLoading ? { animation: 'spin 0.8s linear infinite' } : {}} />
+                </button>
+              </div>
             </div>
             <div className="p-0 flex flex-col divide-y divide-[var(--border)]">
-              {newsLoading ? (
+              {catLoading && !cat ? (
                 <div className="p-5 space-y-4">
                   {[1, 2, 3].map(i => (
                     <div key={i} className="animate-pulse space-y-2">
@@ -343,39 +358,31 @@ export default function Company() {
                     </div>
                   ))}
                 </div>
-              ) : news.length > 0 ? (
-                news.slice(0, 5).map((item, idx) => {
-                  const hours = Math.round(item.hours_ago || 0);
-                  const timeStr = hours < 1 ? 'Just now' : hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
-                  return (
-                    <a
-                      key={idx}
-                      href={item.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-4 hover:bg-[var(--bg-hover)] transition-colors group block"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <h4 className="text-xs font-semibold leading-snug group-hover:text-[var(--accent)] transition-colors line-clamp-2" style={{ color: 'var(--text)' }}>
-                          {item.title}
-                        </h4>
-                        <ExternalLink size={12} className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-[var(--accent)] mt-0.5" />
-                      </div>
-                      <div className="flex items-center gap-2.5 mt-2 text-[11px]" style={{ color: 'var(--text-faint)' }}>
-                        <span className="px-1.5 py-0.5 rounded font-medium text-[10px]" style={{ background: 'var(--bg)', color: 'var(--text-muted)' }}>
-                          {item.source}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Clock size={10} />
-                          {timeStr}
-                        </span>
-                      </div>
-                    </a>
-                  );
-                })
+              ) : catError ? (
+                <div className="p-6 text-center text-xs" style={{ color: 'var(--down)' }}>Could not load catalysts: {catError}</div>
+              ) : cat?.items?.length ? (
+                <>
+                  {(showAll ? cat.items : cat.items.filter(isHeadline).slice(0, 8)).map((item, idx) => (
+                    <CatalystItem key={`${item.time}-${idx}`} item={item} />
+                  ))}
+                  {!showAll && !cat.items.some(isHeadline) && (
+                    <div className="p-5 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
+                      No new material events — only general coverage and market colour.
+                    </div>
+                  )}
+                  <div className="px-4 py-2 flex items-center justify-between text-[11px]" style={{ color: 'var(--text-faint)' }}>
+                    <span>Typed and scored by rules. Impact = direction × materiality × novelty × reliability, reduced if already priced in.</span>
+                    {cat.items.filter(isHeadline).length < cat.items.length || cat.items.length > 8 ? (
+                      <button className="underline shrink-0 ml-2" onClick={() => setShowAll(v => !v)}>
+                        {showAll ? 'Show fewer' : `Show all ${cat.items.length}`}
+                      </button>
+                    ) : null}
+                  </div>
+                </>
               ) : (
                 <div className="p-6 text-center text-xs" style={{ color: 'var(--text-faint)' }}>
-                  No recent news headlines found for {data.name || data.ticker}.
+                  No material filings or headlines in the last 45 days.
+                  {cat?.notes?.length ? <div className="mt-1">{cat.notes.join(' · ')}</div> : null}
                 </div>
               )}
             </div>

@@ -39,7 +39,7 @@ export default function ScreenerTable() {
     let result = dataArr;
     
     // 1. Advanced query parsing
-    if (filters.search && filters.search.includes('=')) {
+    if (filters.search && /[<>=]/.test(filters.search)) {   // 'RSI < 35' is a query too
       result = filterDataByQuery(result, filters.search);
     } else if (filters.search) {
       result = result.filter(d => `${d.ticker} ${d.name || ''}`.toLowerCase().includes(filters.search.toLowerCase()));

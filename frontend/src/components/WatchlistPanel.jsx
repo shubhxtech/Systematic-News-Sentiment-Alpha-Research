@@ -157,7 +157,7 @@ export default function WatchlistPanel() {
       <div className="flex-1 flex overflow-hidden">
         {selected ? (
           <div className="flex-1 w-full max-w-4xl mx-auto overflow-auto">
-            <StockDetailPanel ticker={selected} />
+            <StockDetailPanel key={selected} ticker={selected} />
           </div>
         ) : (
           <div className="empty-state m-auto">

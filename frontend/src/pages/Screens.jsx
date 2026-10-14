@@ -2,7 +2,6 @@ import React from 'react';
 import { useStore } from '../lib/store';
 import MarketBreadth from '../components/MarketBreadth';
 import ScreenerTable from '../components/ScreenerTable';
-import StockDetailPanel from '../components/StockDetailPanel';
 
 export default function Screens() {
   const { selectedTicker } = useStore();

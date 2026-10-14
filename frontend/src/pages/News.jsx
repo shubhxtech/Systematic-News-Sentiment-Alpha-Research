@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../lib/store';
 import { Newspaper, Search, ExternalLink, Clock } from 'lucide-react';
 import { UNIVERSE } from '../lib/upstoxApi';
+import { EventChip, Chip } from '../components/CatalystList';
 
 export default function News() {
   const { watchlist } = useStore();
@@ -9,33 +10,38 @@ export default function News() {
   const [news, setNews] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [materialOnly, setMaterialOnly] = useState(false);
+  const reqId = useRef(0);
   
   // Default search options
   const defaultQueries = ['Indian Stock Market', 'Nifty 50', 'Sensex', 'RBI', ...watchlist.slice(0, 3)];
 
   const fetchNews = async (searchQuery) => {
-    if (!searchQuery.trim()) return;
+    const q = searchQuery.trim();
+    if (!q) return;
+    const id = ++reqId.current;   // only the latest request may update state
     setLoading(true);
     setError(null);
     try {
       // Map ticker to name if it's in the universe
-      const isTicker = !!UNIVERSE[searchQuery];
-      const queryStr = isTicker ? UNIVERSE[searchQuery].name : searchQuery;
-      const tickerParam = isTicker ? `&ticker=${searchQuery}` : '';
-      
+      const sym = q.toUpperCase();
+      const isTicker = !!UNIVERSE[sym];
+      const queryStr = isTicker ? UNIVERSE[sym].name : q;
+      const tickerParam = isTicker ? `&ticker=${encodeURIComponent(sym)}` : '';
+
       const res = await fetch(`/api/news?q=${encodeURIComponent(queryStr)}${tickerParam}`);
       if (!res.ok) throw new Error('Failed to fetch news');
       const data = await res.json();
-      setNews(data);
+      if (id === reqId.current) setNews(Array.isArray(data) ? data : []);
     } catch (e) {
-      setError(e.message);
+      if (id === reqId.current) setError(e.message);
     } finally {
-      setLoading(false);
+      if (id === reqId.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchNews('Indian Stock Market');
+    fetchNews('Indian Stock Market'); // eslint-disable-line react-hooks/set-state-in-effect
   }, []);
 
   const handleSearch = (e) => {
@@ -43,8 +49,12 @@ export default function News() {
     fetchNews(query);
   };
 
-  const last24h = news.filter(n => n.category === 'Last 24 Hours');
-  const past7d = news.filter(n => n.category === 'Past 7 Days');
+  const shown = materialOnly
+    ? news.filter(n => n.materiality_label && n.materiality_label !== 'low' && n.event_type !== 'routine')
+    : news;
+  const last24h = shown.filter(n => n.category === 'Last 24 Hours');
+  const past7d = shown.filter(n => n.category === 'Past 7 Days');
+  const past30d = shown.filter(n => n.category === 'Past 30 Days');
 
   return (
     <div className="flex flex-col h-full bg-[var(--bg)] p-6 overflow-y-auto">
@@ -76,7 +86,7 @@ export default function News() {
         </div>
 
         {/* Quick Links */}
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           {defaultQueries.map(q => (
             <button 
               key={q} 
@@ -86,6 +96,10 @@ export default function News() {
               {q}
             </button>
           ))}
+          <button onClick={() => setMaterialOnly(v => !v)} className={`chip ml-auto${materialOnly ? ' active' : ''}`}
+            title="Hide routine, low-materiality items">
+            Material only
+          </button>
         </div>
 
         {/* Content */}
@@ -99,7 +113,7 @@ export default function News() {
           <div className="text-[var(--down)] p-4 bg-[var(--down-bg)] rounded-lg text-sm border border-[var(--down-border)]">
             Error: {error}
           </div>
-        ) : news.length === 0 ? (
+        ) : shown.length === 0 ? (
           <div className="text-center p-12 text-muted border border-[var(--border)] rounded-lg border-dashed">
             No recent news found for this query.
           </div>
@@ -129,6 +143,18 @@ export default function News() {
                 </div>
               </section>
             )}
+
+            {past30d.length > 0 && (
+              <section>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-muted mb-4 flex items-center gap-2 border-b border-[var(--border)] pb-2">
+                  <Clock size={14} />
+                  Past 30 Days
+                </h2>
+                <div className="grid gap-3 opacity-80">
+                  {past30d.map((article, i) => <NewsCard key={i} article={article} />)}
+                </div>
+              </section>
+            )}
             
           </div>
         )}
@@ -150,10 +176,16 @@ function NewsCard({ article }) {
           <h3 className="font-semibold text-[var(--text)] text-sm md:text-base group-hover:text-[var(--accent)] transition-colors line-clamp-2 leading-tight">
             {article.title}
           </h3>
-          <div className="flex items-center gap-3 mt-2 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-muted">
             <span className="font-medium px-2 py-0.5 rounded bg-[var(--bg-subtle)] border border-[var(--border)]">
               {article.source}
             </span>
+            {article.event_type && article.event_type !== 'other' && <EventChip item={article} />}
+            {article.reliability_label === 'Unverified report' && <Chip color="var(--warn)">unverified</Chip>}
+            {article.novelty != null && article.novelty < 0.5 && <Chip color="var(--warn)">repeat</Chip>}
+            {article.related_sources?.length > 0 && (
+              <span title={article.related_sources.join(', ')}>+{article.related_sources.length} sources</span>
+            )}
             <span className="flex items-center gap-1">
               <Clock size={12} />
               {article.hours_ago < 1 

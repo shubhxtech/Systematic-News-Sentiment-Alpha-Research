@@ -4,6 +4,7 @@ import { X, Layers } from 'lucide-react';
 import { createChart, CrosshairMode, CandlestickSeries, LineSeries, HistogramSeries } from 'lightweight-charts';
 import { ema, vwap } from '../lib/indicators';
 import { UNIVERSE } from '../lib/upstoxApi';
+import { chartTime } from '../lib/format.jsx';
 
 export default function ChartModal({ ticker }) {
   const { candleCache, setChartModalTicker, theme } = useStore();
@@ -39,7 +40,7 @@ export default function ChartModal({ ticker }) {
     candles.forEach((c, i) => {
       // Lightweight charts requires time to be a string (yyyy-mm-dd) or unix timestamp
       // Assuming c.date is ISO string or similar. We convert to unix timestamp.
-      const time = Math.floor(new Date(c.date).getTime() / 1000);
+      const time = chartTime(c.date, timeframe === 'intraday');
       
       prices.push({
         time,
@@ -61,7 +62,7 @@ export default function ChartModal({ ticker }) {
     });
 
     return { prices, volume, ema21: e21, ema50: e50, vwap: vwapLine };
-  }, [candles]);
+  }, [candles, timeframe]);
 
   useEffect(() => {
     if (!chartContainerRef.current || !chartData.prices.length) return;

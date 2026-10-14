@@ -11,6 +11,15 @@ A high-performance, rule-based quantitative screener for the **NIFTY 500** unive
 - **Rule-Based Signals** — Combined Trend + Momentum + Volume + NLP + Fundamentals score
 - **Alerts Engine** — Browser-based price crossover, RSI threshold, and signal-change alerts
 - **Sector Heatmap** — Visual market breadth breakdown by sector
+- **Pre-Results Momentum Scanner** — Ranks companies reporting in the next 14–45 days by *emerging* momentum:
+  sessions to results, 5/10/20-day returns vs sector index and Nifty 500, acceleration, relative volume,
+  NSE delivery trend, each stock's own drift and gap around past results, fundamentals, recent filings,
+  liquidity and volatility. Already-extended stocks are penalised. Every row explains why it qualifies and what the risks are.
+- **Catalyst Intelligence** — Filings and headlines are typed (order win/cancellation, earnings, guidance,
+  capacity, regulatory action/approval, promoter buy/sell, pledges, fund raising, management change, M&A,
+  partnerships, analyst ratings, price commentary). Order value, execution period, client and % of revenue
+  are extracted. Each item gets novelty (repeat detection), materiality, pre-move in σ (priced in?) and
+  source reliability (exchange filing > company > media > rumour).
 - **Dark / Light Theme** — Fully supported
 
 ## Tech Stack
@@ -28,6 +37,13 @@ A high-performance, rule-based quantitative screener for the **NIFTY 500** unive
 india-quant-screener/
 ├── backend/               ← Python HTTP server & ML/NLP pipelines
 │   ├── live_server.py     ← Entry point (run this first)
+│   ├── api.py             ← HTTP routes
+│   ├── market_data.py     ← NSE/BSE/Upstox clients, trading calendar, delivery data, disk cache
+│   ├── premomentum.py     ← Pre-results momentum scanner
+│   ├── catalysts.py       ← Catalyst classification and scoring
+│   ├── earnings.py        ← Board-meeting CSV screen
+│   ├── news.py            ← Headline aggregation
+│   ├── tests/             ← python3 -m unittest discover tests
 │   ├── config.py          ← Tickers, sectors, pipeline config
 │   ├── news_trading_pipeline.py
 │   ├── ml_portfolio.py
@@ -103,6 +119,13 @@ npm run dev                     # starts on http://localhost:5175
 3. Paste your Upstox JWT token
 4. The token is securely proxied through the backend — never exposed in the browser
 
+## Tests
+
+```bash
+cd backend && python3 -m unittest discover tests   # offline, no network
+cd frontend && npm test
+```
+
 ## Data Sources
 
 | Source | Usage |
@@ -110,7 +133,9 @@ npm run dev                     # starts on http://localhost:5175
 | Upstox API | Live quotes, OHLCV candles |
 | FinBERT (local) | News headline sentiment scoring |
 | HuggingFace `ProsusAI/finbert` | NLP model |
-| yfinance | Historical price fallback |
+| yfinance | Historical price fallback (optional) |
+| NSE (nseindia.com) | Upcoming/past results board meetings, corporate filings, holidays, delivery bhavcopy |
+| BSE (bseindia.com) | Filings for BSE-only companies |
 
 > **Disclaimer**: This is a research/educational tool. All signals are purely rule-based algorithmic scores and do **not** constitute financial or investment advice.
 

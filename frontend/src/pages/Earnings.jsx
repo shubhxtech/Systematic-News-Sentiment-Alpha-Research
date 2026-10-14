@@ -84,31 +84,52 @@ export default function Earnings() {
 
   const loadRun = useCallback(async (run = 'latest') => {
     setError('');
-    const res = await fetch(`/api/earnings/results?run=${run}`);
-    if (res.status === 404) { setData(null); return; }
-    if (!res.ok) { setError('Could not load results'); return; }
-    setData(await res.json());
+    try {
+      const res = await fetch(`/api/earnings/results?run=${encodeURIComponent(run)}`);
+      if (res.status === 404) { setData(null); return; }
+      if (!res.ok) { setError('Could not load results'); return; }
+      setData(await res.json());
+    } catch {
+      setError('Backend unreachable — is it running?');
+    }
   }, []);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetch on mount
   useEffect(() => { loadRun(); loadRuns(); }, [loadRun, loadRuns]);
 
-  // poll running job
+  // poll running job (keyed on id/status only, so the interval is not rebuilt every tick)
+  const jobId = job?.id;
+  const jobRunning = job?.status === 'running';
   useEffect(() => {
-    if (!job || job.status !== 'running') return;
+    if (!jobId || !jobRunning) return;
+    let misses = 0;
     const t = setInterval(async () => {
       try {
-        const j = await (await fetch(`/api/earnings/status?id=${job.id ?? job.job_id}`)).json();
+        const res = await fetch(`/api/earnings/status?id=${jobId}`);
+        if (res.status === 404) {
+          // backend restarted and forgot the job: stop instead of spinning forever
+          setJob(prev => ({ ...prev, status: 'error' }));
+          setError('The screening job was lost (backend restarted). Upload the file again.');
+          return;
+        }
+        const j = await res.json();
+        misses = 0;
         setJob(prev => ({ ...prev, ...j }));
         if (j.status === 'done') { loadRun(j.run_id); loadRuns(); }
-        if (j.status === 'error') setError(j.error);
-      } catch { /* retry next tick */ }
+        if (j.status === 'error') setError(j.error || 'Screening failed');
+      } catch {
+        if (++misses >= 20) {
+          setJob(prev => ({ ...prev, status: 'error' }));
+          setError('Lost contact with the backend while screening.');
+        }
+      }
     }, 1500);
     return () => clearInterval(t);
-  }, [job, loadRun, loadRuns]);
+  }, [jobId, jobRunning, loadRun, loadRuns]);
 
   async function post(url, body) {
     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const j = await res.json();
+    const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
     if (!res.ok) throw new Error(j.error || 'Request failed');
     return j;
   }
@@ -136,7 +157,7 @@ export default function Earnings() {
     const q = f.search.trim().toLowerCase();
     let r = data.rows.filter(x =>
       (!q || (x.company || '').toLowerCase().includes(q) || (x.nse_symbol || '').toLowerCase().includes(q)) &&
-      x.days_left <= f.maxDays &&
+      (x.days_left ?? 0) <= f.maxDays &&
       (!f.scoredOnly || x.composite != null) &&
       (x.fund_score ?? 0) >= f.minFund &&
       (!f.hideFlagged || !x.flags) &&
@@ -161,7 +182,7 @@ export default function Earnings() {
 
   const activeEf = Object.values(ef).filter(b => (b.min ?? '') !== '' || (b.max ?? '') !== '').length;
   const s = data?.summary;
-  const pctDone = job?.total ? Math.round((job.done / job.total) * 100) : 0;
+  const pctDone = job?.total ? Math.min(100, Math.round((job.done / job.total) * 100)) : 0;
 
   return (
     <div className="absolute inset-0 flex flex-col overflow-hidden">
@@ -182,12 +203,15 @@ export default function Earnings() {
         </button>
         <div className="ml-auto flex items-center gap-2">
           {runs.length > 0 && (
-            <select className="select" value={data?.run_id || ''} onChange={e => loadRun(e.target.value)}>
+            <select className="select" value={data?.run_id || ''} onChange={e => e.target.value && loadRun(e.target.value)}>
+              {!data?.run_id && <option value="">Select a run</option>}
               {runs.map(r => <option key={r.run_id} value={r.run_id}>{r.generated_at.replace('T', ' ')} · {r.source_file}</option>)}
             </select>
           )}
-          <a className={`btn btn-secondary${data ? '' : ' disabled'}`} href={`/api/earnings/results?run=${data?.run_id || 'latest'}&format=csv&download=1`}><Download size={13} /> CSV</a>
-          <a className={`btn btn-secondary${data ? '' : ' disabled'}`} href={`/api/earnings/results?run=${data?.run_id || 'latest'}&format=json&download=1`}><Download size={13} /> JSON</a>
+          {data && <>
+            <a className="btn btn-secondary" href={`/api/earnings/results?run=${data.run_id || 'latest'}&format=csv&download=1`}><Download size={13} /> CSV</a>
+            <a className="btn btn-secondary" href={`/api/earnings/results?run=${data.run_id || 'latest'}&format=json&download=1`}><Download size={13} /> JSON</a>
+          </>}
         </div>
       </div>
 

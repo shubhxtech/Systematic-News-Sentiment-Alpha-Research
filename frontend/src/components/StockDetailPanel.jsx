@@ -6,6 +6,28 @@ import { inr, pct, signalLabel, signalClass } from '../lib/format';
 export default function StockDetailPanel({ ticker }) {
   const { screenerData, setSelectedTicker, setChartModalTicker, portfolio, updatePortfolio } = useStore();
   const data = screenerData[ticker];
+  const position = portfolio[ticker];
+
+  // All hooks run before any early return (rules of hooks). Calling them after
+  // `if (!data) return null` crashed React when a ticker's data arrived later.
+  const [isEditingPnl, setIsEditingPnl] = useState(!position);
+  const [buyPrice, setBuyPrice] = useState(position?.buyPrice || '');
+  const [qty, setQty] = useState(position?.qty || '');
+  const [news, setNews] = useState([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const name = data?.name;
+
+  useEffect(() => {
+    if (!ticker) return;
+    let active = true;
+    setNewsLoading(true); // eslint-disable-line react-hooks/set-state-in-effect
+    fetch(`/api/news?q=${encodeURIComponent(name || ticker)}&ticker=${encodeURIComponent(ticker)}`)
+      .then(res => res.json())
+      .then(d => { if (active) setNews(Array.isArray(d) ? d.slice(0, 5) : []); })
+      .catch(e => console.error('News fetch failed', e))
+      .finally(() => { if (active) setNewsLoading(false); });
+    return () => { active = false; };
+  }, [ticker, name]);
 
   if (!data) return null;
 
@@ -16,7 +38,9 @@ export default function StockDetailPanel({ ticker }) {
   const ema21 = data.ema21 || 0;
   const ema50 = data.ema50 || 0;
   const rsi = data.rsi || 0;
-  const macdHistogram = data.breakdown?.macd || 0; // Using score for now, but really it's MACD > signal
+  const macdHistogram = data.macdLine != null && data.macdSig != null
+    ? data.macdLine - data.macdSig
+    : (data.breakdown?.momentum?.score ?? 0);
 
   const checks = [
     { label: 'Price > EMA 50', passed: price > ema50 },
@@ -26,10 +50,6 @@ export default function StockDetailPanel({ ticker }) {
   ];
 
   // P&L Logic
-  const position = portfolio[ticker];
-  const [isEditingPnl, setIsEditingPnl] = useState(!position);
-  const [buyPrice, setBuyPrice] = useState(position?.buyPrice || '');
-  const [qty, setQty] = useState(position?.qty || '');
 
   const pnl = position ? (price - position.buyPrice) * position.qty : 0;
   const pnlPct = position ? ((price - position.buyPrice) / position.buyPrice) * 100 : 0;
@@ -47,27 +67,6 @@ export default function StockDetailPanel({ ticker }) {
     setQty('');
     setIsEditingPnl(true);
   };
-
-  // Fetch News for this ticker
-  const [news, setNews] = useState([]);
-  const [newsLoading, setNewsLoading] = useState(false);
-  
-  useEffect(() => {
-    let active = true;
-    if (!ticker) return;
-    
-    setNewsLoading(true);
-    const query = data.name || ticker;
-    fetch(`/api/news?q=${encodeURIComponent(query)}&ticker=${ticker}`)
-      .then(res => res.json())
-      .then(d => {
-        if (active) setNews(d.slice(0, 5)); // show top 5
-      })
-      .catch(e => console.error("News fetch failed", e))
-      .finally(() => { if (active) setNewsLoading(false); });
-      
-    return () => { active = false; };
-  }, [ticker, data.name]);
 
   return (
     <div className="flex flex-col h-full bg-[var(--bg)] border-l border-[var(--border)] animate-in slide-in-from-right-4 duration-200">

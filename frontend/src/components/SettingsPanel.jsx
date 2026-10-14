@@ -5,7 +5,8 @@ import { testConnection } from '../lib/upstoxApi';
 
 export default function SettingsPanel() {
   const { apiToken, setApiToken, telegramBotToken, telegramChatId, setTelegramConfig } = useStore();
-  const [tokenInput, setTokenInput] = useState(apiToken);
+  const [tokenInput, setTokenInput] = useState('');   // the real token is never read back from the backend
+  const [saveError, setSaveError] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [status, setStatus] = useState('unknown');
   const [tgBotToken, setTgBotToken] = useState(telegramBotToken);
@@ -18,6 +19,7 @@ export default function SettingsPanel() {
     try {
       const res = await fetch('/api/settings/status');
       const data = await res.json();
+      setApiToken(!!data.has_upstox_token);   // keep the UI flag in sync with the backend
       if (!data.has_upstox_token) {
         setStatus('unknown');
         return;
@@ -33,14 +35,23 @@ export default function SettingsPanel() {
   useEffect(() => { checkToken(); }, []);
 
   const handleSaveToken = async () => {
-    await fetch('/api/settings/upstox-token', {
-      method: 'POST',
-      body: JSON.stringify({ token: tokenInput }),
-      headers: { 'Content-Type': 'application/json' }
-    });
-    setApiToken(tokenInput);   // keep real token in store so apiToken guard works
-    setTokenInput('');
-    checkToken();
+    const token = tokenInput.trim();
+    if (!token) return;
+    setSaveError('');
+    try {
+      const res = await fetch('/api/settings/upstox-token', {
+        method: 'POST',
+        body: JSON.stringify({ token }),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      setApiToken(true);
+      useStore.getState().setError(null);
+      setTokenInput('');
+      checkToken();
+    } catch (e) {
+      setSaveError(`Could not save token: ${e.message}. Is the backend running?`);
+    }
   };
 
   const handleSaveTelegram = async () => {
@@ -112,8 +123,9 @@ export default function SettingsPanel() {
               </div>
             </div>
 
+            {saveError && <div className="text-xs" style={{ color: 'var(--down)' }}>{saveError}</div>}
             <div className="flex gap-2">
-              <button onClick={handleSaveToken} className="btn btn-primary">
+              <button onClick={handleSaveToken} className="btn btn-primary" disabled={!tokenInput.trim()}>
                 Save token
               </button>
               {status !== 'unknown' && (
@@ -124,7 +136,7 @@ export default function SettingsPanel() {
                       body: JSON.stringify({ token: '' }),
                       headers: { 'Content-Type': 'application/json' }
                     });
-                    setApiToken(''); 
+                    setApiToken(false);
                     setTokenInput(''); 
                     checkToken(); 
                   }}

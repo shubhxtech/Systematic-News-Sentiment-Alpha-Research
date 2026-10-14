@@ -4,22 +4,8 @@ import { Bell, Plus, Trash2, CheckCircle2, Send } from 'lucide-react';
 import { TICKERS } from '../lib/upstoxApi';
 import { inr } from '../lib/format';
 
-async function sendTelegram(botToken, chatId, message) {
-  if (!botToken || !chatId) return false;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'HTML' }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 export default function AlertsPanel() {
-  const { alerts, addAlert, removeAlert, screenerData, triggerAlert, telegramBotToken, telegramChatId, watchlist } = useStore();
+  const { alerts, addAlert, removeAlert, telegramBotToken, telegramChatId, watchlist } = useStore();
   const [ticker, setTicker] = useState('RELIANCE');
   const [metric, setMetric] = useState('price');
   const [condition, setCondition] = useState('above');
@@ -28,57 +14,16 @@ export default function AlertsPanel() {
   // All available tickers = universe + watchlist
   const allTickers = [...new Set([...TICKERS, ...watchlist])].sort();
 
-  // Monitor loop
   useEffect(() => {
-    if (!Object.keys(screenerData).length) return;
-
-    alerts.forEach(async alert => {
-      if (alert.triggered) return;
-      const data = screenerData[alert.ticker];
-      if (!data) return;
-
-      let isTriggered = false;
-      if (alert.metric === 'price') {
-        isTriggered = alert.condition === 'above' ? data.ltp >= alert.value : data.ltp <= alert.value;
-      } else if (alert.metric === 'rsi') {
-        isTriggered = alert.condition === 'above' ? data.rsi >= alert.value : data.rsi <= alert.value;
-      } else if (alert.metric === 'signal') {
-        isTriggered = data.signal === alert.value || (alert.value === 'BUY' && data.signal?.includes('BUY'));
-      }
-
-      if (isTriggered) {
-        triggerAlert(alert.id);
-
-        const msg = `🔔 <b>Quant Alert Triggered!</b>\n\n` +
-          `📈 <b>${alert.ticker}</b>\n` +
-          `Condition: <code>${alert.metric.toUpperCase()} ${alert.condition === 'above' ? '≥' : alert.condition === 'below' ? '≤' : '='} ${alert.value}</code>\n` +
-          `LTP: <b>₹${data.ltp?.toFixed(2) ?? 'N/A'}</b> | Signal: <b>${data.signal ?? 'N/A'}</b>\n` +
-          `RSI: ${data.rsi?.toFixed(1) ?? 'N/A'} | Score: ${data.signalScore ?? 'N/A'}\n\n` +
-          `⏰ ${new Date().toLocaleTimeString('en-IN')}`;
-
-        // Browser notification
-        if (Notification.permission === 'granted') {
-          new Notification('Quant Screener Alert', {
-            body: `${alert.ticker} ${alert.metric} is ${alert.condition} ${alert.value}`,
-            icon: '/favicon.ico'
-          });
-        }
-
-        // Telegram notification
-        if (telegramBotToken && telegramChatId) {
-          await sendTelegram(telegramBotToken, telegramChatId, msg);
-        }
-      }
-    });
-  }, [screenerData, alerts, triggerAlert, telegramBotToken, telegramChatId]);
-
-  useEffect(() => {
-    if (Notification.permission === 'default') Notification.requestPermission();
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch?.(() => {});
+    }
   }, []);
 
   const handleAdd = (e) => {
     e.preventDefault();
-    if (!value && metric !== 'signal') return;
+    if (metric !== 'signal' && !Number.isFinite(parseFloat(value))) return;
+    if (metric === 'signal' && !value) return;
     addAlert({
       id: Date.now().toString(),
       ticker,

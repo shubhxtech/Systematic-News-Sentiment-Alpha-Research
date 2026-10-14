@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useStore } from './lib/store';
-import { useScreenerData } from './hooks/useScreenerData';
+import { useScreenerData, useScreenerPolling } from './hooks/useScreenerData';
+import { useAlertMonitor } from './hooks/useAlertMonitor';
 import {
   LineChart, LayoutGrid, Star, BellRing, Settings,
-  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper, CalendarClock
+  RefreshCw, KeyRound, AlertCircle, Moon, Sun, Newspaper, CalendarClock, Rocket
 } from 'lucide-react';
 import Screens          from './pages/Screens';
 import Company          from './pages/Company';
@@ -14,6 +15,7 @@ import AlertsPanel      from './components/AlertsPanel';
 import WatchlistPanel   from './components/WatchlistPanel';
 import News             from './pages/News';
 import Earnings         from './pages/Earnings';
+import PreResults       from './pages/PreResults';
 
 export default function App() {
   const navigate = useNavigate();
@@ -24,6 +26,19 @@ export default function App() {
   } = useStore();
 
   const { pollOnce } = useScreenerData();
+  useScreenerPolling();   // the only poll loop in the app
+  useAlertMonitor();      // alerts fire on every page, not just /alerts
+
+  // The backend owns the token; sync the UI flag with it (it may have a token from .upstox_token
+  // even when this browser has never seen one, or the token may have been removed).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/settings/status')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled && d) useStore.getState().setApiToken(!!d.has_upstox_token); })
+      .catch(() => { if (!cancelled) useStore.getState().setError('Backend unreachable — start it with ./start.sh'); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
@@ -55,18 +70,19 @@ export default function App() {
             <span className="font-semibold text-sm" style={{ color: 'var(--text)' }}>India Screener</span>
           </div>
 
-          <nav className="flex items-center gap-1">
+          <nav className="flex items-center gap-1 overflow-x-auto">
             <NavLink active={path === '/'} onClick={() => navigate('/')} icon={LayoutGrid} label="Screener" />
             <NavLink active={path === '/watchlist'} onClick={() => navigate('/watchlist')} icon={Star} label={`Watchlist${watchlist.length ? ` (${watchlist.length})` : ''}`} />
             <NavLink active={path === '/heatmap'} onClick={() => navigate('/heatmap')} icon={LayoutGrid} label="Sectors" />
             <NavLink active={path === '/earnings'} onClick={() => navigate('/earnings')} icon={CalendarClock} label="Earnings" />
+            <NavLink active={path === '/pre-results'} onClick={() => navigate('/pre-results')} icon={Rocket} label="Pre-Results" />
             <NavLink active={path === '/news'} onClick={() => navigate('/news')} icon={Newspaper} label="News" />
             <NavLink active={path === '/alerts'} onClick={() => navigate('/alerts')} icon={BellRing} label="Alerts" />
           </nav>
         </div>
 
         <div className="flex items-center gap-3">
-          {error && <div className="flex items-center gap-1 text-xs" style={{ color: 'var(--down)' }}><AlertCircle size={13} /> Error</div>}
+          {error && <div className="flex items-center gap-1 text-xs max-w-[280px] truncate" title={error} style={{ color: 'var(--down)' }}><AlertCircle size={13} className="shrink-0" /> {error}</div>}
           {marketOpen && (
             <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--up)' }}>
               <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--up)', animation: 'pulse 1.5s ease-in-out infinite' }} />
@@ -99,9 +115,11 @@ export default function App() {
           <Route path="/watchlist" element={<WatchlistPanel />} />
           <Route path="/heatmap" element={<SectorHeatmap />} />
           <Route path="/earnings" element={<Earnings />} />
+          <Route path="/pre-results" element={<PreResults />} />
           <Route path="/news" element={<News />} />
           <Route path="/alerts" element={<AlertsPanel />} />
           <Route path="/settings" element={<SettingsPanel />} />
+          <Route path="*" element={<Screens />} />
         </Routes>
       </main>
 
