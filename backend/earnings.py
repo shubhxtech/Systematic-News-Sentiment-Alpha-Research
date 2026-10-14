@@ -4,11 +4,11 @@ Upload a board-meeting CSV -> resolve each company (BSE code -> ISIN -> NSE symb
 -> attach fundamentals (master CSV, yfinance fallback) -> attach price/volume
 indicators (Upstox candles) -> score -> save JSON + CSV under data/earnings/.
 """
-import gzip
 import io
 import json
 import math
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+import market_data as md
 import state
 
 try:
@@ -30,9 +31,7 @@ except ImportError:
 DATA_DIR = Path(__file__).parent / "data"
 EARN_DIR = DATA_DIR / "earnings"
 MASTER_CSV = DATA_DIR / "fundamentals_master.csv"
-INSTR_CACHE = DATA_DIR / "instruments_eq.json"
-INSTR_URL = "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz"
-UA = {"User-Agent": "Mozilla/5.0"}
+UA = md.UA
 KEEP_RUNS = 20
 
 FUND_COLS = [
@@ -44,19 +43,26 @@ FUND_COLS = [
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+RUN_LOCK = threading.Lock()   # one pipeline writes results at a time
+MASTER_LOCK = threading.Lock()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
 def _clean(v):
     """Make a value JSON-safe (NaN/inf -> None, numpy -> python)."""
+    if isinstance(v, (np.bool_,)):
+        return bool(v)
     if isinstance(v, (np.integer,)):
         return int(v)
     if isinstance(v, (np.floating, float)):
         return None if (math.isnan(v) or math.isinf(v)) else round(float(v), 4)
     if isinstance(v, (pd.Timestamp, datetime)):
         return v.strftime("%Y-%m-%d")
-    if v is pd.NaT or (not isinstance(v, str) and pd.isna(v)):
-        return None
+    try:
+        if v is pd.NaT or v is pd.NA or (not isinstance(v, (str, list, dict, tuple)) and pd.isna(v)):
+            return None
+    except (TypeError, ValueError):
+        pass
     return v
 
 
@@ -99,12 +105,15 @@ def parse_board_meetings(text):
         "bm_industry": df[c_ind].str.strip() if c_ind else "",
         "purpose": df[c_purpose].str.strip() if c_purpose else "",
     })
-    d = pd.to_datetime(df[c_date], format="%d %b %Y", errors="coerce")
-    miss = d.isna()
-    if miss.any():
-        d[miss] = pd.to_datetime(df.loc[miss, c_date], dayfirst=True, errors="coerce")
+    raw_dates = df[c_date].astype(str).str.strip()
+    d = pd.to_datetime(raw_dates, format="%d %b %Y", errors="coerce")
+    for fmt in ("%d-%b-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %B %Y"):
+        miss = d.isna()
+        if not miss.any():
+            break
+        d = d.where(~miss, pd.to_datetime(raw_dates, format=fmt, errors="coerce"))
     out["result_date"] = d
-    bad = int(out.bse_code.isna().sum() + out.result_date.isna().sum())
+    bad = int((out.bse_code.isna() | out.result_date.isna()).sum())
     out = out.dropna(subset=["bse_code", "result_date"])
     out["bse_code"] = out.bse_code.astype(int)
     before = len(out)
@@ -114,24 +123,7 @@ def parse_board_meetings(text):
 
 
 # ── 2. instrument resolution ───────────────────────────────────────────────
-def load_instruments():
-    """BSE scrip code -> ISIN/name, ISIN -> NSE symbol. Cached for 24h."""
-    if INSTR_CACHE.exists() and time.time() - INSTR_CACHE.stat().st_mtime < 86400:
-        return json.loads(INSTR_CACHE.read_text())
-    r = requests.get(INSTR_URL, headers=UA, timeout=60)
-    r.raise_for_status()
-    raw = json.loads(gzip.decompress(r.content))
-    bse, nse = {}, {}
-    for x in raw:
-        if x.get("segment") == "BSE_EQ" and x.get("instrument_type") != "F":
-            bse[str(x["exchange_token"])] = {"isin": x.get("isin"), "bse_symbol": x.get("trading_symbol"),
-                                              "name": x.get("name")}
-        elif x.get("segment") == "NSE_EQ" and x.get("instrument_type") == "EQ":
-            nse[x["isin"]] = x["trading_symbol"]
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    data = {"bse": bse, "nse": nse}
-    INSTR_CACHE.write_text(json.dumps(data))
-    return data
+load_instruments = md.load_instruments
 
 
 # ── 3. fundamentals ────────────────────────────────────────────────────────
@@ -150,11 +142,16 @@ def merge_fundamentals_csv(text):
     if "ISIN Code" not in new.columns:
         raise ValueError("fundamentals CSV needs an 'ISIN Code' column")
     new = new.dropna(subset=["ISIN Code"]).drop_duplicates("ISIN Code", keep="last")
-    old = load_master()
-    keep = old[~old["ISIN Code"].isin(new["ISIN Code"])]
-    merged = pd.concat([keep, new], ignore_index=True)
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    merged.to_csv(MASTER_CSV, index=False)
+    if new.empty:
+        raise ValueError("no rows with an ISIN Code")
+    with MASTER_LOCK:
+        old = load_master()
+        keep = old[~old["ISIN Code"].isin(new["ISIN Code"])]
+        merged = pd.concat([keep, new], ignore_index=True)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = MASTER_CSV.with_suffix(".tmp")
+        merged.to_csv(tmp, index=False)
+        tmp.replace(MASTER_CSV)
     return {"added_or_updated": len(new), "total": len(merged)}
 
 
@@ -188,24 +185,9 @@ def _yf_fundamentals(nse_symbol, bse_symbol):
 
 # ── 4. price data ──────────────────────────────────────────────────────────
 def fetch_candles(isin, days=600):
-    """Public Upstox historical-candle endpoint (daily, no auth needed)."""
-    to = datetime.now().strftime("%Y-%m-%d")
-    frm = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    url = f"https://api.upstox.com/v2/historical-candle/NSE_EQ%7C{isin}/day/{to}/{frm}"
-    for attempt in range(3):
-        try:
-            r = requests.get(url, headers=UA, timeout=20)
-            if r.status_code == 429:
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            r.raise_for_status()
-            c = r.json()["data"]["candles"]
-            df = pd.DataFrame(c, columns=["t", "o", "h", "l", "c", "v", "oi"])
-            df["t"] = pd.to_datetime(df.t, utc=True).dt.tz_convert(None).dt.normalize()
-            return df.sort_values("t").set_index("t")
-        except Exception:
-            time.sleep(0.5)
-    return None
+    """Daily candles by ISIN (NSE, falling back to BSE). Dates are exchange dates."""
+    df, _ = md.equity_candles(isin, days=days)
+    return df
 
 
 def fetch_ltp(isins):
@@ -221,9 +203,10 @@ def fetch_ltp(isins):
             r = requests.get("https://api.upstox.com/v2/market-quote/ltp", params={"instrument_key": keys},
                              headers=h, timeout=20)
             if r.ok:
-                for v in r.json().get("data", {}).values():
+                for v in (r.json().get("data") or {}).values():
                     tok = v.get("instrument_token", "")
-                    out[tok.split("|")[-1]] = v.get("last_price")
+                    if v.get("last_price"):
+                        out[tok.split("|")[-1]] = v["last_price"]
         except Exception:
             pass
     return out
@@ -266,8 +249,17 @@ def _wavg(parts):
     return sum(w * v for w, v in have) / sum(w for w, _ in have)
 
 
-def score_row(r):
-    nz = lambda k: None if r.get(k) is None or pd.isna(r.get(k)) else float(r[k])
+def _num(v):
+    try:
+        f = float(v)
+        return None if math.isnan(f) or math.isinf(f) else f
+    except (TypeError, ValueError):
+        return None
+
+
+def fundamental_score(r, include_liquidity=True):
+    """0-100 quality/growth/value score from Screener-style fields, or None without core data."""
+    nz = lambda k: _num(r.get(k))
     pg, sg = nz("YOY Quarterly profit growth"), nz("YOY Quarterly sales growth")
     growth = _wavg([
         (.5, None if pg is None else _clip01(math.log1p(max(min(pg, 300), -90) / 100), 0, 1.4)),
@@ -282,13 +274,19 @@ def score_row(r):
     pe, peg = nz("Price to Earning"), nz("PEG Ratio")
     value = _wavg([
         (.5, None if pe is None else (0.0 if pe <= 0 else _clip01(60 - pe, 0, 50))),
-        (.5, None if peg is None else _clip01(2.5 - peg, 0, 2))])
+        (.5, None if peg is None or peg <= 0 else _clip01(2.5 - peg, 0, 2))])  # negative PEG = shrinking EPS
     fii = nz("Change in FII holding")
     fii_s = None if fii is None else _clip01(fii, 0, 2)
-    liq = _clip01(math.log10(max(r["adv20_cr"], .1)), .3, 2) if r.get("adv20_cr") is not None else None
-    core = any(v is not None for v in (growth, quality, value))
+    adv = _num(r.get("adv20_cr"))
+    liq = _clip01(math.log10(max(adv, .1)), .3, 2) if (include_liquidity and adv is not None) else None
+    if not any(v is not None for v in (growth, quality, value)):
+        return None  # liquidity alone is not a score
     fund = _wavg([(.30, growth), (.25, quality), (.10, balance), (.15, value), (.10, fii_s), (.10, liq)])
-    fund = 100 * fund if (fund is not None and core) else None  # liquidity alone is not a score
+    return 100 * fund
+
+
+def score_row(r):
+    fund = fundamental_score(r)
 
     r60 = r.get("ret_60d")
     tech = None
@@ -313,7 +311,7 @@ def flags(r):
         out.append("no fundamentals")
     if r["fundamentals_source"] == "yfinance":
         out.append("partial fundamentals (no ROCE/FII/CFO)")
-    g = r.get("YOY Quarterly profit growth")
+    g = _num(r.get("YOY Quarterly profit growth"))
     if g is not None and g > 500:
         out.append("profit growth >500%: low base / one-off likely")
     if r["trading_days_left"] < 5:
@@ -330,12 +328,12 @@ def flags(r):
 # ── 6. pipeline ────────────────────────────────────────────────────────────
 def run_pipeline(job_id, csv_text, filename="upload.csv", use_yfinance=True):
     try:
-        today = pd.Timestamp(datetime.now().date())
+        today = pd.Timestamp(md.today_ist())
         _set_job(job_id, stage="parsing", done=0, total=0)
         meetings, parse_info = parse_board_meetings(csv_text)
+        n_parsed = len(meetings)
         meetings = meetings[meetings.result_date >= today]
-        parse_info["past_dates_dropped"] = parse_info["rows_read"] - len(meetings) - parse_info["rows_unparseable"] \
-            - parse_info["duplicates_removed"]
+        parse_info["past_dates_dropped"] = n_parsed - len(meetings)
 
         _set_job(job_id, stage="resolving symbols")
         instr = load_instruments()
@@ -355,7 +353,7 @@ def run_pipeline(job_id, csv_text, filename="upload.csv", use_yfinance=True):
                 "company": m.company, "bse_code": m.bse_code, "nse_symbol": nse or (f["NSE Code"] if f is not None and pd.notna(f["NSE Code"]) else None),
                 "bse_symbol": ins.get("bse_symbol"), "isin": isin or (f["ISIN Code"] if f is not None else None),
                 "board_meeting_industry": m.bm_industry, "result_date": m.result_date,
-                "trading_days_left": int(np.busday_count(today.date(), m.result_date.date())),
+                "trading_days_left": md.trading_days_between(today.date(), m.result_date.date()),
                 "days_left": int((m.result_date - today).days),
                 "fundamentals_source": "none",
             }
@@ -379,7 +377,7 @@ def run_pipeline(job_id, csv_text, filename="upload.csv", use_yfinance=True):
                     _set_job(job_id, done=k)
 
         # prices
-        priced = [r for r in rows if r["isin"] and r["nse_symbol"]]
+        priced = [r for r in rows if r["isin"]]  # BSE-only listings fall back to BSE candles
         _set_job(job_id, stage="prices (Upstox)", done=0, total=len(priced))
         def px(r):
             time.sleep(0.15)
@@ -391,7 +389,7 @@ def run_pipeline(job_id, csv_text, filename="upload.csv", use_yfinance=True):
                 _set_job(job_id, done=k)
 
         _set_job(job_id, stage="live quotes")
-        ltp = fetch_ltp([r["isin"] for r in priced])
+        ltp = fetch_ltp(list({r["isin"] for r in priced}))
         for r in rows:
             r["ltp"] = ltp.get(r["isin"]) or r.get("last_close") or r.get("Current Price")
             r["ltp_source"] = "upstox_live" if ltp.get(r["isin"]) else ("upstox_candle" if r.get("last_close") else "fundamentals_csv")
@@ -414,32 +412,52 @@ def run_pipeline(job_id, csv_text, filename="upload.csv", use_yfinance=True):
             "scored": sum(r["composite"] is not None for r in rows),
             "live_quotes": bool(ltp), "yfinance_available": yf is not None,
         }
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_run(run_id, {"run_id": run_id, "generated_at": datetime.now().isoformat(timespec="seconds"),
-                          "source_file": filename, "summary": summary, "rows": clean})
+        with RUN_LOCK:
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            while (EARN_DIR / run_id).exists():  # two runs in the same second
+                time.sleep(1)
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_run(run_id, {"run_id": run_id, "generated_at": datetime.now().isoformat(timespec="seconds"),
+                              "source_file": filename, "summary": summary, "rows": clean})
         _set_job(job_id, stage="done", status="done", run_id=run_id, summary=summary)
     except Exception as e:
-        _set_job(job_id, status="error", error=str(e))
+        import traceback
+        traceback.print_exc()
+        _set_job(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+
+def _atomic_write(path, data):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    if isinstance(data, bytes):
+        tmp.write_bytes(data)
+    else:
+        tmp.write_text(data)
+    tmp.replace(path)
 
 
 def save_run(run_id, payload):
     d = EARN_DIR / run_id
     d.mkdir(parents=True, exist_ok=True)
-    (d / "results.json").write_text(json.dumps(payload, indent=1))
-    pd.DataFrame(payload["rows"]).to_csv(d / "results.csv", index=False)
-    (EARN_DIR / "latest.json").write_text(json.dumps(payload, indent=1))
-    pd.DataFrame(payload["rows"]).to_csv(EARN_DIR / "latest.csv", index=False)
-    runs = sorted(p for p in EARN_DIR.iterdir() if p.is_dir())
+    body = json.dumps(payload, indent=1)
+    csv_text = pd.DataFrame(payload["rows"]).to_csv(index=False)
+    _atomic_write(d / "results.json", body)
+    _atomic_write(d / "results.csv", csv_text)
+    _atomic_write(EARN_DIR / "latest.json", body)
+    _atomic_write(EARN_DIR / "latest.csv", csv_text)
+    runs = sorted(p for p in EARN_DIR.iterdir() if p.is_dir() and re.fullmatch(r"\d{8}_\d{6}", p.name))
     for old in runs[:-KEEP_RUNS]:
-        for f in old.iterdir():
-            f.unlink()
-        old.rmdir()
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def start_job(csv_text, filename):
     job_id = uuid.uuid4().hex[:8]
     with JOBS_LOCK:
-        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "queued", "done": 0, "total": 0}
+        # forget finished jobs older than an hour so the dict does not grow forever
+        cutoff = time.time() - 3600
+        for k in [k for k, j in JOBS.items() if j.get("status") != "running" and j.get("started", 0) < cutoff]:
+            JOBS.pop(k, None)
+        JOBS[job_id] = {"id": job_id, "status": "running", "stage": "queued", "done": 0, "total": 0,
+                        "started": time.time()}
     threading.Thread(target=run_pipeline, args=(job_id, csv_text, filename), daemon=True).start()
     return job_id
 
@@ -453,7 +471,7 @@ def list_runs():
     if not EARN_DIR.exists():
         return []
     out = []
-    for d in sorted((p for p in EARN_DIR.iterdir() if p.is_dir()), reverse=True):
+    for d in sorted((p for p in EARN_DIR.iterdir() if p.is_dir() and re.fullmatch(r"\d{8}_\d{6}", p.name)), reverse=True):
         try:
             j = json.loads((d / "results.json").read_text())
             out.append({"run_id": d.name, "generated_at": j["generated_at"], "source_file": j["source_file"],
